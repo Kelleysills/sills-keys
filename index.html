@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111216">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://raw.githubusercontent.com; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Sills Licence Manager</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- lock / setup -->
+  <section id="lock" class="screen center" hidden>
+    <img src="icon-192.png" alt="" class="logo">
+    <h1>Sills Licence Manager</h1>
+    <p id="lockMsg" class="dim">Enter your PIN</p>
+    <div class="pinDots" id="pinDots"></div>
+    <div class="keypad" id="keypad"></div>
+  </section>
+
+  <section id="setup" class="screen" hidden>
+    <img src="icon-192.png" alt="" class="logo small">
+    <h1>Set up this phone</h1>
+    <ol class="steps">
+      <li>On your PC: Sills Audio Hub &rarr; Licence manager &rarr; <b>Admins</b>. Name it after this phone (e.g. "Kelley S26"), pick what it may issue, and make the pass.</li>
+      <li>Send the pass to yourself privately and paste it here.</li>
+    </ol>
+    <label>Admin pass</label>
+    <textarea id="passInput" rows="4" placeholder="SILLSADMIN1...." autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+    <p id="passInfo" class="note"></p>
+    <label>Choose a PIN (6 - 12 digits)</label>
+    <input id="pin1" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12">
+    <label>PIN again</label>
+    <input id="pin2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12">
+    <button id="setupGo" class="primary">Save and unlock</button>
+    <p class="note dim">The pass is stored on this phone only, encrypted with your PIN. Your master signing key never leaves your PC.</p>
+  </section>
+
+  <!-- main -->
+  <section id="main" hidden>
+    <header class="top">
+      <img src="icon-192.png" alt="" class="logo tiny">
+      <div class="titles"><div class="brand">SILLS AUDIO</div><div id="topTitle" class="title">Issue a key</div></div>
+      <button id="lockBtn" class="icon" aria-label="Lock">
+        <svg viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>
+      </button>
+    </header>
+
+    <div class="tabs">
+      <!-- issue -->
+      <div class="tab" id="tab-issue">
+        <div id="replaceBanner" class="banner" hidden></div>
+        <label>Licensee</label>
+        <input id="licensee" type="text" autocomplete="off" placeholder="Customer's name" maxlength="60">
+        <label>What they get</label>
+        <select id="what"></select>
+        <label>Type</label>
+        <div class="seg" id="typeSeg">
+          <button data-v="1" class="on">Perpetual</button><button data-v="2">Subscription</button><button data-v="3">Not for resale</button>
+        </div>
+        <div id="daysRow" hidden>
+          <label id="daysLabel">Length</label>
+          <div class="chips" id="dayChips"><button data-d="30">30 days</button><button data-d="90">90 days</button><button data-d="365">1 year</button></div>
+          <input id="days" type="number" inputmode="numeric" min="1" max="3650" value="30">
+        </div>
+        <p id="serialPreview" class="note dim"></p>
+        <button id="issueBtn" class="primary">Generate key</button>
+        <div id="result" class="card" hidden>
+          <div class="cardHead"><span id="resTitle"></span><span class="badge good">NEW</span></div>
+          <pre id="resKey" class="key"></pre>
+          <p id="resInfo" class="dim small"></p>
+          <div class="row"><button id="resCopy">Copy</button><button id="resShare">Share</button></div>
+        </div>
+      </div>
+
+      <!-- keys -->
+      <div class="tab" id="tab-keys" hidden>
+        <input id="search" type="search" placeholder="Search name or serial">
+        <p id="revInfo" class="note dim"></p>
+        <div id="keyList" class="list"></div>
+      </div>
+
+      <!-- check -->
+      <div class="tab" id="tab-check" hidden>
+        <label>Paste any Sills Audio key</label>
+        <textarea id="checkInput" rows="5" placeholder="SILLS-....." autocapitalize="off" spellcheck="false"></textarea>
+        <button id="checkBtn" class="primary">Check key</button>
+        <div id="checkResult" class="card" hidden></div>
+      </div>
+
+      <!-- settings -->
+      <div class="tab" id="tab-settings" hidden>
+        <div class="card"><div class="cardHead"><span>This phone's admin pass</span></div><div id="passCard" class="small"></div>
+          <div class="row"><button id="replacePass">Replace pass</button></div></div>
+        <div class="card"><div class="cardHead"><span>Serial numbers</span></div>
+          <p class="small dim">Keys from this phone use serials in its own admin range, so they never clash with your PC's.</p>
+          <label>Next serial</label><input id="nextSerial" type="number" inputmode="numeric">
+        </div>
+        <div class="card"><div class="cardHead"><span>Your PC's key list</span></div>
+          <p class="small dim">Import issued-keys.csv (Documents\SillsAudio\Keys on your PC) to look up and re-issue every key here.</p>
+          <div class="row"><label class="filebtn">Import CSV<input id="importCsv" type="file" accept=".csv,text/csv,text/plain" hidden></label><button id="exportCsv">Export my keys</button></div>
+        </div>
+        <div class="card"><div class="cardHead"><span>Revocation list</span></div>
+          <p id="revCard" class="small dim"></p>
+          <div class="row"><button id="refreshRev">Refresh now</button></div>
+        </div>
+        <div class="card"><div class="cardHead"><span>Security</span></div>
+          <label>Lock after</label>
+          <select id="lockAfter"><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select>
+          <div class="row"><button id="changePin">Change PIN</button><button id="eraseAll" class="danger">Erase everything</button></div>
+        </div>
+        <p class="note dim center">Sills Licence Manager 1.0 &middot; revoking keys still happens on your PC (Licence manager &rarr; Keys), because only the master key can do it.</p>
+      </div>
+    </div>
+
+    <nav class="bottom">
+      <button data-tab="issue" class="on"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Issue</span></button>
+      <button data-tab="keys"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><span>Keys</span></button>
+      <button data-tab="check"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg><span>Check</span></button>
+      <button data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
+    </nav>
+  </section>
+
+  <!-- key detail sheet -->
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheetBody">
+      <div class="grab"></div>
+      <div id="sheetContent"></div>
+      <div class="row wrap">
+        <button id="shCopy">Copy key</button><button id="shShare">Share</button><button id="shReissue" class="primaryLite">Change &amp; re-issue</button>
+      </div>
+      <button id="shClose" class="ghost">Close</button>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+</div>
+</body>
+</html>
