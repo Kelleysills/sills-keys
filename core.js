@@ -316,3 +316,19 @@ export async function verifyTrustedMasters(text) {
   const masters = body.split("\n").map((l) => l.trim()).filter((l) => /^[0-9a-fA-F]{64}/.test(l)).map((l) => ({ hex: l.slice(0, 64).toLowerCase(), name: l.slice(64).trim() }));
   return { ok: true, seq, masters };
 }
+
+// ================================================================== licence policy (rules pulled from GitHub)
+/** policy.txt: "SILLS-POLICY 1\n<json>\nsig <hex>" signed by any trusted master. Returns { ok, policy, seq } */
+export async function verifyPolicy(text) {
+  const t = text.replace(/\r\n/g, "\n");
+  const sigPos = t.lastIndexOf("\nsig ");
+  if (!t.startsWith("SILLS-POLICY 1\n") || sigPos < 0) return { ok: false };
+  const body = t.slice(0, sigPos + 1);
+  const sig = hexToBytes(t.slice(sigPos + 5).trim());
+  if (sig.length !== 64 || !(await verifyAnyRoot(sig, enc.encode(body)))) return { ok: false };
+  try { const policy = JSON.parse(body.slice(body.indexOf("\n") + 1)); return { ok: true, policy, seq: policy.seq || 0 }; } catch { return { ok: false }; }
+}
+export async function signPolicy(policy, secret64) {
+  const body = "SILLS-POLICY 1\n" + JSON.stringify(policy, null, 2) + "\n";
+  return body + "sig " + bytesToHex(await sign(secret64, enc.encode(body))) + "\n";
+}

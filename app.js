@@ -197,8 +197,8 @@ function enterMain() {
   updateSerial();
   renderPassCard();
   renderKeys();
-  refreshMasters().then(() => refreshRevocations(false));
-  renderMaster(); renderAdmins(); renderAlerts(); renderBio();
+  refreshMasters().then(() => { refreshRevocations(false); refreshPolicy(); });
+  renderMaster(); renderAdmins(); renderAlerts(); renderBio(); renderPolicy();
   if (new URLSearchParams(location.search).get("tab") === "keys") tab("keys");
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
@@ -522,10 +522,58 @@ function renderMaster() {
   $("masterBadge").hidden = !canMaster();
   $("keepMaster").checked = state.data.keepMaster !== false;
 }
-const LEDGER_API = "https://api.github.com/repos/Kelleysills/sills-ledger/contents/";
+// ------------------------------------------------------------------ licence policy (rules pulled from GitHub)
+const POLICY_URL = `https://raw.githubusercontent.com/${REPO}/main/policy.txt`;
+let policy = (ls.get("sills.policy", null) || {}).policy || {};
+const pol = (path, fallback) => { let v = policy; for (const k of path.split(".")) { if (v == null || typeof v !== "object") return fallback; v = v[k]; } return v === undefined ? fallback : v; };
+async function refreshPolicy() {
+  try {
+    const res = await fetch(POLICY_URL, { cache: "no-store" });
+    if (res.ok) {
+      const v = await L.verifyPolicy(await res.text());
+      const cached = ls.get("sills.policy", null);
+      if (v.ok && (!cached || v.seq >= (cached.seq || 0))) { ls.set("sills.policy", v); policy = v.policy; }
+    }
+  } catch {}
+  renderPolicy(); renderAdmins();
+}
+function renderPolicy() {
+  if (!$("policyState")) return;
+  const seq = pol("seq", 0);
+  $("policyState").innerHTML = seq ? `Rules version ${seq}: up to ${pol("activation.maxComputers", 2)} computers per key, activation lasts ${pol("activation.tokenDays", 45)} days, `
+    + `${(pol("admins.hidden", []) || []).length} admin(s) hidden, key list ${pol("ledger.enabled", true) ? "synced" : "not synced"}.` : "No rules published yet - your Hub publishes them on its next check.";
+}
+/** Change the published rules (signed with this phone's master key); the PC's Hub pulls them into Keys\\policy.json. */
+async function changePolicy(mutate, what) {
+  if (!canMaster() && !((await unlockMaster()) && canMaster())) { toast("Master mode is needed for that."); return false; }
+  if (!state.data.ghToken) { toast("Add your GitHub token in Settings first."); return false; }
+  try {
+    const cur = await ghFetch("policy.txt?ref=main", { cache: "no-store" });
+    let sha, p = JSON.parse(JSON.stringify(policy || {}));
+    if (cur.status !== 404) {
+      const j = await cur.json(); sha = j.sha;
+      const v = await L.verifyPolicy(b64ToText(j.content));
+      if (!v.ok) throw new Error("the published rules' signature doesn't check out");
+      p = v.policy;
+    }
+    mutate(p);
+    p.seq = (p.seq || 0) + 1;
+    const text = await L.signPolicy(p, state.master);
+    const put = await ghFetch("policy.txt", { method: "PUT", body: JSON.stringify({ message: "Licence policy: " + what + " (phone)", content: textToB64(text), ...(sha ? { sha, branch: "main" } : {}) }) });
+    if (!put.ok) throw new Error("GitHub " + put.status);
+    const v = await L.verifyPolicy(text); ls.set("sills.policy", v); policy = v.policy;
+    renderPolicy(); renderAdmins();
+    return true;
+  } catch (e) { toast("Rules not saved: " + e.message); return false; }
+}
+const adminShown = (id) => { const m = pol("admins.displayNumbers", {}) || {}; return m[String(id)] != null ? Number(m[String(id)]) : id; };
+const adminFromShown = (n) => { const m = pol("admins.displayNumbers", {}) || {}; for (const [k, v] of Object.entries(m)) if (Number(v) === n) return Number(k); return m[String(n)] != null ? -1 : n; };
+const adminHidden = (id) => (pol("admins.hidden", []) || []).map(Number).includes(id);
+
+const LEDGER_API_FOR = () => `https://api.github.com/repos/${pol("ledger.repo", "Kelleysills/sills-ledger")}/contents/`;
 async function ghFetch(path, opts = {}, base = API) {
   const res = await fetch(base + path, { ...opts, headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) } });
-  if (!res.ok && res.status !== 404) throw new Error(res.status === 401 ? "GitHub token rejected" : res.status === 403 ? (base === API ? "token can't write to the releases repo" : "token can't reach sills-ledger") : "GitHub " + res.status);
+  if (!res.ok && res.status !== 404) throw new Error(res.status === 401 ? "GitHub token rejected" : res.status === 403 ? (base === API ? "token can't write to the releases repo" : "token can't reach the ledger repo") : "GitHub " + res.status);
   return res;
 }
 // ------------------------------------------------------------------ shared key list (private repo sills-ledger, keys.csv)
@@ -538,13 +586,14 @@ function syncStatus(t, bad) { const el = $("syncState"); if (el) { el.textConten
 async function syncLedger(loud) {
   if (syncing) return;
   if (!state.data.ghToken) { syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
+  if (!pol("ledger.enabled", true)) { syncStatus("Key list sync is switched off in your licence rules."); return; }
   syncing = true; syncStatus("Syncing with your PC's list...");
   try {
     // a token without access to a private repo gets "404 not found", not 403 - check the repo itself first
-    const repoRes = await fetch("https://api.github.com/repos/Kelleysills/sills-ledger", { cache: "no-store", headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json" } });
+    const repoRes = await fetch("https://api.github.com/repos/" + pol("ledger.repo", "Kelleysills/sills-ledger"), { cache: "no-store", headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json" } });
     if (repoRes.status === 401) throw new Error("GitHub token rejected - make a new one");
     if (!repoRes.ok) throw new Error("your token can't see sills-ledger - edit the token on GitHub and add that repo (Contents: Read and write)");
-    const cur = await ghFetch("keys.csv?ref=main", { cache: "no-store" }, LEDGER_API);
+    const cur = await ghFetch(pol("ledger.keysFile", "keys.csv") + "?ref=main", { cache: "no-store" }, LEDGER_API_FOR());
     let sha, text = "";
     if (cur.status !== 404) { const j = await cur.json(); sha = j.sha; text = b64ToText(j.content); }
     const remote = new Map();
@@ -568,7 +617,7 @@ async function syncLedger(loud) {
     if (outgoing.length) {
       const all = new Map(remote); for (const r of outgoing) all.set(r.serial, { line: rowToCsv(r) });
       const body = "serial,issued,licensee,type,products,expires,key,note\n" + [...all.keys()].sort((a, b) => a - b).map((k) => all.get(k).line).join("\n") + "\n";
-      const putRes = await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);   // an empty repo has no main yet
+      const putRes = await ghFetch(pol("ledger.keysFile", "keys.csv"), { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API_FOR());   // an empty repo has no main yet
       if (!putRes.ok) throw new Error("couldn't save to sills-ledger (GitHub " + putRes.status + ") - the token needs Contents: Read and write");
     }
     if (changed) { state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial); await save(); }
@@ -700,7 +749,7 @@ let sharedAdmins = [];   // from sills-ledger/admins.csv (PC-made passes: metada
 async function syncAdmins() {
   if (!state.data.ghToken) return;
   try {
-    const cur = await ghFetch("admins.csv?ref=main", { cache: "no-store" }, LEDGER_API);
+    const cur = await ghFetch(pol("ledger.adminsFile", "admins.csv") + "?ref=main", { cache: "no-store" }, LEDGER_API_FOR());
     let sha, text = "";
     if (cur.status !== 404) { const j = await cur.json(); sha = j.sha; text = b64ToText(j.content); }
     const remote = new Map();
@@ -710,7 +759,7 @@ async function syncAdmins() {
     if (mine.length) {
       const all = new Map(remote); for (const a of mine) all.set(a.id, { line: [a.id, a.made, csvCell(a.name), csvCell(a.scope)].join(",") });
       const body = "admin,created,name,scope\n" + [...all.keys()].sort((x, y) => x - y).map((k) => all.get(k).line).join("\n") + "\n";
-      await ghFetch("admins.csv", { method: "PUT", body: JSON.stringify({ message: "Sync admins (phone)", content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);
+      await ghFetch(pol("ledger.adminsFile", "admins.csv"), { method: "PUT", body: JSON.stringify({ message: "Sync admins (phone)", content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API_FOR());
     }
     renderAdmins();
   } catch {}
@@ -718,21 +767,36 @@ async function syncAdmins() {
 function allAdmins() {
   const mine = state.data.admins || [];
   const ids = new Set(mine.map((a) => a.id));
-  return [...mine, ...sharedAdmins.filter((a) => !ids.has(a.id))].sort((a, b) => a.id - b.id);
+  return [...mine, ...sharedAdmins.filter((a) => !ids.has(a.id))].filter((a) => !adminHidden(a.id)).sort((a, b) => adminShown(a.id) - adminShown(b.id));
 }
 function adminIsOff(id) { const rv = state.rev && state.rev.serials ? state.rev.serials : []; return rv.includes(L.adminRevocationId(id)); }
 function openAdmin(a) {
   const off = adminIsOff(a.id);
   state.lastPass = a.pass || null;
   $("adDetail").hidden = false;
-  $("adDetail").innerHTML = `<div class="cardHead"><span>Admin #${a.id} - ${esc(a.name)}</span><span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`
-    + `<div class="kv"><div>Can issue</div><div>${esc(a.scope || "?")}</div><div>Made</div><div>${esc(a.made || "?")}${a.pass ? " on this phone" : " on your PC"}</div></div>`
+  $("adDetail").innerHTML = `<div class="cardHead"><span>Admin #${adminShown(a.id)} - ${esc(a.name)}</span><span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`
+    + `<div class="kv"><div>Can issue</div><div>${esc(a.scope || "?")}</div><div>Made</div><div>${esc(a.made || "?")}${a.pass ? " on this phone" : " on your PC"}</div>`
+    + (adminShown(a.id) !== a.id ? `<div>Real number</div><div>${a.id} (inside the pass and its keys)</div>` : "") + `</div>`
+    + `<div class="row"><input id="adShownAs" type="number" inputmode="numeric" min="1" value="${adminShown(a.id)}" style="max-width:110px"><button id="adRenumber">Show as this number</button></div>`
     + `<div class="row wrap">${a.pass ? `<button id="adCopyPass">Copy pass</button>` : ""}`
     + `<button id="adChange" class="primaryLite">Change scope / end date</button>`
-    + (off ? `<button id="adBackOn">Back on</button>` : `<button id="adSwitchOff" class="danger">Switch off</button>`) + `</div>`
+    + (off ? `<button id="adBackOn">Back on</button><button id="adRemove" class="danger">Remove from list</button>` : `<button id="adSwitchOff" class="danger">Switch off</button>`) + `</div>`
     + `<p class="small dim">Change makes a new pass with the same admin number (send it to them; keys they already issued keep working). Switch off also stops every key they issued.</p>`;
   if (a.pass) $("adCopyPass").onclick = () => copyText(a.pass, "Pass copied.");
   $("adChange").onclick = () => startChangeAdmin(a);
+  $("adRenumber").onclick = async () => {
+    const n = parseInt($("adShownAs").value || "0", 10);
+    if (!(n > 0)) { toast("Pick a number from 1 up."); return; }
+    const clash = allAdmins().find((x) => x.id !== a.id && adminShown(x.id) === n);
+    if (clash) { toast(`#${n} is already ${clash.name} - renumber that one first.`); return; }
+    if (await changePolicy((p) => { p.admins = p.admins || {}; p.admins.displayNumbers = p.admins.displayNumbers || {}; if (n === a.id) delete p.admins.displayNumbers[String(a.id)]; else p.admins.displayNumbers[String(a.id)] = n; }, `admin ${a.id} shown as #${n}`))
+      { toast(`${a.name} now shows as #${n} everywhere.`); openAdmin(a); }
+  };
+  if (off) $("adRemove").onclick = async () => {
+    if (!confirm(`Remove ${a.name} (#${adminShown(a.id)}) from the lists? The pass stays switched off.`)) return;
+    if (await changePolicy((p) => { p.admins = p.admins || {}; const h = new Set((p.admins.hidden || []).map(Number)); h.add(a.id); p.admins.hidden = [...h]; }, `remove admin ${a.id} from the lists`))
+      { toast(`${a.name} removed from the lists.`); $("adDetail").hidden = true; }
+  };
   if (off) $("adBackOn").onclick = async () => { await adminSwitch(a.id, false); openAdmin(a); };
   else $("adSwitchOff").onclick = async () => { await adminSwitch(a.id, true); openAdmin(a); };
   $("adDetail").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -748,7 +812,7 @@ function startChangeAdmin(a) {
   $("adBanner").hidden = false;
   $("adBanner").innerHTML = `<span class="grow">Changing admin #${a.id}: pick the new scope and days (0 = permanent), then make the pass.</span><button id="adCancelChange">Cancel</button>`;
   $("adCancelChange").onclick = () => { state.changingAdmin = null; $("adBanner").hidden = true; };
-  $("adGo").textContent = "Make new pass for #" + a.id;
+  $("adGo").textContent = "Make new pass for #" + adminShown(a.id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function renderAdmins() {
@@ -757,7 +821,7 @@ function renderAdmins() {
   const list = allAdmins();
   $("adminList").innerHTML = list.length ? list.map((a) => {
     const off = rv.includes(L.adminRevocationId(a.id));
-    return `<div class="item" data-admin="${a.id}"><div class="ser">A${a.id}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}${a.pass ? "" : " (PC)"}</div></div>`
+    return `<div class="item" data-admin="${a.id}"><div class="ser">#${adminShown(a.id)}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}${a.pass ? "" : " (PC)"}</div></div>`
       + `<span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`;
   }).join("") : `<div class="empty">No admins yet.${state.data.ghToken ? "" : "<br>Add your GitHub token in Settings to see the ones made on your PC."}</div>`;
   $("adGo").disabled = !canMaster();
@@ -774,7 +838,7 @@ async function makePass() {
   const days = parseInt($("adDays").value || "0", 10);
   const lastDay = days > 0 ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + days) : null;
   const changing = state.changingAdmin || null;
-  const id = changing || state.data.nextAdmin || PHONE_ADMIN_BASE;
+  const id = changing || state.data.nextAdmin || pol("admins.phoneIdBase", PHONE_ADMIN_BASE);
   let pass;
   try { pass = await L.makeAdminPass(name, id, allowP, allowB, lastDay, state.master); } catch (e) { toast(e.message); return; }
   const p = await L.parseAdminPass(pass);
@@ -881,12 +945,13 @@ function wire() {
   $("adGo").onclick = makePass;
   $("adCopy").onclick = () => state.lastPass && copyText(state.lastPass);
   $("adShare").onclick = () => state.lastPass && navigator.share && navigator.share({ title: "Sills Audio god-mode pass", text: state.lastPass }).catch(() => {});
-  $("adOff").onclick = () => adminSwitch(parseInt($("adId").value || "0", 10), true);
-  $("adOn").onclick = () => adminSwitch(parseInt($("adId").value || "0", 10), false);
+  const boxAdmin = () => { const t = ($("adId").value || "").trim(); if (/^a/i.test(t)) return parseInt(t.slice(1), 10); const id = adminFromShown(parseInt(t || "0", 10)); if (id < 0) toast("That number is ambiguous - type A and the real number."); return id; };
+  $("adOff").onclick = () => adminSwitch(boxAdmin(), true);
+  $("adOn").onclick = () => adminSwitch(boxAdmin(), false);
   $("adminList").addEventListener("click", async (e) => {
     const it = e.target.closest(".item"); if (!it) return;
     const a = allAdmins().find((x) => x.id === Number(it.dataset.admin)); if (!a) return;
-    $("adId").value = a.id;
+    $("adId").value = adminShown(a.id);
     openAdmin(a);
   });
   $("checkBtn").onclick = check;
