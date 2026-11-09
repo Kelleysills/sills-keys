@@ -245,7 +245,7 @@ function renderKeys() {
     return `<div class="item" data-serial="${r.serial}"><div class="ser">#${r.serial}</div><div class="who"><div class="name">${esc(r.licensee)}</div>`
       + `<div class="what">${esc(r.products)} - ${esc(r.type)}${r.expires !== "never" ? " - ends " + esc(r.expires) : ""}${r.source === "pc" ? " - PC" : ""}</div></div>`
       + `<span class="badge ${cls}">${st}</span></div>`;
-  }).join("") : `<div class="empty">No keys yet.<br>Keys you issue here show up in this list. Import your PC's list in Settings to see those too.</div>`;
+  }).join("") : `<div class="empty">No keys yet.<br>${state.data.ghToken ? "Your PC's keys arrive once its Hub (0.4.24 or later) has synced - then tap Sync with PC." : "Add your GitHub token in Settings, then tap Sync with PC to bring in your PC's keys."}</div>`;
   renderRevInfo();
 }
 function renderRevInfo() {
