@@ -1,5 +1,5 @@
 // Sills Licence Manager service worker: the app works offline; the revocation list always comes from the network.
-const CACHE = "sills-keys-v18";
+const CACHE = "sills-keys-v19";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./core.js", "./holiday.js", "./update.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {

@@ -386,8 +386,8 @@ async function openSheet(serial) {
     + (info.valid ? "" : `<p class="note err">${esc(info.error)}</p>`);
   const isRevoked = st === "REVOKED";
   $("shRevoke").hidden = isRevoked; $("shRestore").hidden = !isRevoked;
-  const adminOnly = !state.data.master, locked = adminOnly && isProtectedRow(r);
-  $("shRevoke").disabled = $("shRestore").disabled = adminOnly ? locked : !canMaster();
+  const adminOnly = !state.data.ghToken, locked = adminOnly && isProtectedRow(r);
+  $("shRevoke").disabled = $("shRestore").disabled = adminOnly ? (locked || !(state.pass && state.pass.valid)) : !canMaster();
   $("shReissue").disabled = locked;
   $("shMasterHint").hidden = canMaster() || (adminOnly && !locked);
   $("shMasterHint").textContent = locked ? "This key is protected - only Sills Audio can change it." : "Revoke, restore and computers need master mode (Settings).";
@@ -624,7 +624,7 @@ let syncing = false;
 function syncStatus(t, bad) { const el = $("syncState"); if (el) { el.textContent = t; el.classList.toggle("err", !!bad); } }
 async function syncLedger(loud) {
   if (syncing) return;
-  if (!state.data.ghToken) { if (!state.data.master) { await shareKeys(loud); return readLedger(loud); } syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
+  if (!state.data.ghToken) { if (state.pass && state.pass.valid) { await shareKeys(loud); return readLedger(loud); } syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
   if (!pol("ledger.enabled", true)) { syncStatus("Key list sync is switched off in your licence rules."); return; }
   syncing = true; syncStatus("Syncing with your PC's list...");
   try {
@@ -685,7 +685,8 @@ async function syncLedger(loud) {
 
 /** add (revoke) or remove (restore) serials in the published list, signed with this phone's master key */
 async function changeRevocations(serials, revoke) {
-  if (!state.data.master) return adminRevoke(serials, revoke);   // admins: a request the owner's devices sign and publish
+  // no GitHub access (admins, demi-god masters): a request the owner's devices sign and publish; protected keys are refused
+  if (!state.data.ghToken) return canMaster() ? masterQueue(serials, revoke) : adminRevoke(serials, revoke);
   if (!canMaster()) { if (!(await unlockMaster()) || !canMaster()) { toast("Master mode is needed for that."); return false; } }
   if (!state.data.ghToken) { toast("Add your GitHub token in Settings > Master mode first."); tab("settings"); return false; }
   try {
@@ -898,7 +899,7 @@ async function makePass() {
   const days = parseInt($("adDays").value || "0", 10);
   const lastDay = days > 0 ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + days) : null;
   const changing = state.changingAdmin || null;
-  const id = changing || state.data.nextAdmin || pol("admins.phoneIdBase", PHONE_ADMIN_BASE);
+  const id = changing || state.data.nextAdmin || phoneIdBase();
   const req = state.approvingReq || null;
   if (req && !changing) {   // approving a phone pass request: certify THEIR key; their secret never leaves their phone
     try {
@@ -933,6 +934,7 @@ async function makePass() {
 }
 async function adminSwitch(id, off) {
   if (!id) return;
+  if (!state.data.ghToken && (pol("admins.protected.admins", []) || []).map(Number).includes(id)) { toast(`Admin #${adminShown(id)} is protected - only Sills Audio can switch it.`); return; }
   if (off && !confirm(`Switch off admin #${id}? Every key they issued stops working too.`)) return;
   if (await changeRevocations([L.adminRevocationId(id)], off)) toast(off ? `Admin #${id} switched off.` : `Admin #${id} back on.`);
 }
@@ -1158,6 +1160,7 @@ async function readLedger(loud) {
     const j = await res.json();
     if (j.error) throw new Error(j.error);
     let added = 0;
+    if (Array.isArray(j.admins)) { sharedAdmins = j.admins; renderAdmins(); }
     for (const r of j.rows || []) {
       const mine = state.data.rows.find((x) => x.serial === r.serial);
       if (mine) { if ((r.note || "").length > (mine.note || "").length) mine.note = r.note; continue; }
@@ -1190,20 +1193,43 @@ async function adminRevoke(serials, revoke) {
 /** Owner: keep the admins' read-only copy current and carry out their revoke / restore requests (signed here, published to GitHub). */
 async function ownerServiceSync() {
   const rows = state.data.rows.map((r) => ({ serial: r.serial, issued: r.issued, licensee: r.licensee, type: r.type, products: r.products, expires: r.expires, key: r.key, note: r.note || "" }));
-  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(rows))))).slice(0, 32);
-  await adminCall("ledgerput", h, { rows });
+  const admins = allAdmins().map((a) => ({ id: a.id, name: a.name, scope: a.scope || "", made: a.made || "" }));   // never the passes themselves
+  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ rows, admins }))))).slice(0, 32);
+  await adminCall("ledgerput", h, { rows, admins });
   const q = (await adminCall("revq")).queue || [];
   if (!q.length) return;
   const done = [];
+  const isProt = (x) => x.serial >= 0x80000000 ? (pol("admins.protected.admins", []) || []).map(Number).includes(x.serial - 0x80000000)
+    : isProtectedRow(state.data.rows.find((r) => r.serial === x.serial) || { serial: x.serial, licensee: "" });
   for (const revoke of [true, false]) {
-    const items = q.filter((x) => x.revoke === revoke && !isProtectedRow(state.data.rows.find((r) => r.serial === x.serial) || { serial: x.serial, licensee: "" }));
+    const items = q.filter((x) => x.revoke === revoke && !isProt(x));
     if (items.length && (await changeRevocations(items.map((x) => x.serial), revoke))) done.push(...items.map((x) => x.qid));
   }
   // protected ones that slipped in are dropped
-  for (const x of q) if (isProtectedRow(state.data.rows.find((r) => r.serial === x.serial) || { serial: x.serial, licensee: "" })) done.push(x.qid);
+  for (const x of q) if (isProt(x)) done.push(x.qid);
   if (done.length) {
     const dh = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(done))))).slice(0, 32);
     await adminCall("revqdone", dh, { done });
     toast(`Applied ${done.length} admin request${done.length === 1 ? "" : "s"}.`);
   }
+}
+
+/** Each trusted phone gets its own block of admin ids (2048+256 per phone, in masters.txt order) so two phones never clash. */
+function phoneIdBase() {
+  const base = pol("admins.phoneIdBase", PHONE_ADMIN_BASE);
+  const idx = state.masters && state.masters.ok ? state.masters.masters.findIndex((m) => m.hex === masterPub()) : -1;
+  return base + 256 * Math.max(0, idx);
+}
+/** Demi-god master without GitHub: revoke / restore / switch admins through the activation service (protected ones refused there). */
+async function masterQueue(serials, revoke) {
+  const list = serials.map(Number).filter((n) => n > 0);
+  const blocked = list.filter((n) => n < 0x80000000 && isProtectedRow(state.data.rows.find((x) => x.serial === n) || { serial: n, licensee: "" }));
+  if (blocked.length) { toast("Protected key - only Sills Audio can change #" + blocked.join(", #") + "."); return false; }
+  try {
+    const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify({ serials: list, revoke }))))).slice(0, 32);
+    const j = await adminCall("queuerevoke", h, { serials: list, revoke });
+    if (j.refused && j.refused.length) toast("Protected - not changed: " + j.refused.map((n) => n >= 0x80000000 ? "admin #" + adminShown(n - 0x80000000) : "#" + n).join(", "));
+    else toast((revoke ? "Switch-off / revoke" : "Restore") + " sent - it takes effect as soon as Sills Audio confirms it (usually within minutes).");
+    return !!(j.queued && j.queued.length);
+  } catch (e) { toast("Didn't go through: " + e.message); return false; }
 }
