@@ -386,8 +386,11 @@ async function openSheet(serial) {
     + (info.valid ? "" : `<p class="note err">${esc(info.error)}</p>`);
   const isRevoked = st === "REVOKED";
   $("shRevoke").hidden = isRevoked; $("shRestore").hidden = !isRevoked;
-  $("shRevoke").disabled = $("shRestore").disabled = !canMaster();
-  $("shMasterHint").hidden = canMaster();
+  const adminOnly = !state.data.master, locked = adminOnly && isProtectedRow(r);
+  $("shRevoke").disabled = $("shRestore").disabled = adminOnly ? locked : !canMaster();
+  $("shReissue").disabled = locked;
+  $("shMasterHint").hidden = canMaster() || (adminOnly && !locked);
+  $("shMasterHint").textContent = locked ? "This key is protected - only Sills Audio can change it." : "Revoke, restore and computers need master mode (Settings).";
   $("shPcs").hidden = true; $("shComputers").disabled = !canMaster() || !actUrl();
   $("sheet").hidden = false;
 }
@@ -621,7 +624,7 @@ let syncing = false;
 function syncStatus(t, bad) { const el = $("syncState"); if (el) { el.textContent = t; el.classList.toggle("err", !!bad); } }
 async function syncLedger(loud) {
   if (syncing) return;
-  if (!state.data.ghToken) { syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
+  if (!state.data.ghToken) { if (!state.data.master) { await shareKeys(loud); return readLedger(loud); } syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
   if (!pol("ledger.enabled", true)) { syncStatus("Key list sync is switched off in your licence rules."); return; }
   syncing = true; syncStatus("Syncing with your PC's list...");
   try {
@@ -639,6 +642,20 @@ async function syncLedger(loud) {
       if (serial > 0 && c[6]) remote.set(serial, { line, c });
     }
     let added = 0, changed = false;
+    // keys admins shared through the activation service (admins without GitHub access) join the list here
+    if (canMaster()) {
+      try {
+        const ak = await adminCall("adminkeys");
+        for (const r of ak.rows || []) {
+          if (remote.has(r.serial) || state.data.rows.some((x) => x.serial === r.serial)) continue;
+          const info = await L.verifyKey(r.key);
+          if (!info.valid && !info.expired) continue;
+          state.data.rows.push({ serial: info.serial, issued: r.issued, licensee: info.licensee, type: info.typeName, products: info.productText,
+            expires: info.lastDay ? L.isoDay(info.lastDay) : "never", key: r.key, note: r.note || "", source: "admin", issuer: info.issuerId });
+          ++added; changed = true;
+        }
+      } catch { /* service unreachable: next time */ }
+    }
     for (const [serial, { c }] of remote) {
       const mine = state.data.rows.find((r) => r.serial === serial);
       if (mine) { if ((c[7] || "").length > (mine.note || "").length) { mine.note = c[7]; changed = true; } continue; }
@@ -658,6 +675,7 @@ async function syncLedger(loud) {
     }
     if (changed) { state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial); await save(); }
     state.data.lastSync = Date.now();
+    if (canMaster()) ownerServiceSync().catch(() => {});   // admins' read-only copy + their revoke requests
     renderKeys();
     syncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${remote.size} key${remote.size === 1 ? "" : "s"} in the shared list` + (added ? `, ${added} new here.` : "."));
     if (loud) toast(`Key list synced${added ? ` - ${added} new from your PC` : ""}.`);
@@ -667,6 +685,7 @@ async function syncLedger(loud) {
 
 /** add (revoke) or remove (restore) serials in the published list, signed with this phone's master key */
 async function changeRevocations(serials, revoke) {
+  if (!state.data.master) return adminRevoke(serials, revoke);   // admins: a request the owner's devices sign and publish
   if (!canMaster()) { if (!(await unlockMaster()) || !canMaster()) { toast("Master mode is needed for that."); return false; } }
   if (!state.data.ghToken) { toast("Add your GitHub token in Settings > Master mode first."); tab("settings"); return false; }
   try {
@@ -725,7 +744,7 @@ async function loadInbox(loud) {
       + (x.pending.note ? `<div class="dim">"${esc(x.pending.note)}"</div>` : "") + `<div class="dim">${when(x.pending.at)} - now on ${esc(x.machines.map((m) => m.name).join(", ") || "none")}</div></div>`
       + `<div class="row"><button class="primaryLite" data-approve="${x.serial}">Approve</button><button data-deny="${x.serial}">Deny</button></div></div>`).join("")
       : (passHtml ? "" : `<p class="small dim">No requests waiting.</p>`));
-    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for", passreq: "asked for" };
+    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for", passreq: "asked for", revokereq: "asked to revoke", restorereq: "asked to restore" };
     $("evList").innerHTML = e.events.slice(0, 40).map((x) => `<div>${when(x.at)} - ${x.serial ? "#" + x.serial + " " : ""}${esc(x.licensee)} ${label[x.type] || x.type} ${esc(x.name || "")}</div>`).join("") || "Nothing yet.";
     const n = r.requests.length + pr.requests.length;
     navigator.setAppBadge?.(n).catch?.(() => {});
@@ -1096,4 +1115,95 @@ async function startPassApproval(id) {
 async function denyPass(id) {
   try { await adminCall("passdeny", id); toast("Request declined."); } catch (e) { toast("Didn't go through: " + e.message); }
   loadInbox();
+}
+
+// ------------------------------------------------------------------ admins without GitHub: share issued keys with the owner
+// Signed with this phone's admin pass; the activation service only accepts keys this admin really issued, and only the owner
+// (master) can read them back. Admins never see other people's keys and can't remove anything.
+async function shareKeys(loud) {
+  if (!state.pass || !state.pass.valid) return;
+  const rows = state.data.rows.filter((r) => r.issuer === state.pass.adminId).map((r) => ({ serial: r.serial, issued: r.issued, licensee: r.licensee,
+    type: r.type, products: r.products, expires: r.expires, key: r.key, note: r.note || "" }));
+  if (!rows.length) { syncStatus("Keys you issue are shared with Sills Audio automatically."); return; }
+  try {
+    const ts = Math.floor(Date.now() / 1000);
+    const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(rows)))));
+    const sig = await L.signBytes(state.pass.secret, new TextEncoder().encode(`sills-adminkeys|${h}|${ts}`));
+    const res = await fetch(actUrl() + "/admin-keys", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cert: L.bytesToHex(state.pass.cert), rows, ts, sig: L.bytesToHex(sig) }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    syncStatus(`Shared with Sills Audio ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${j.total} key${j.total === 1 ? "" : "s"}.`);
+    if (loud) toast("Your keys are shared with Sills Audio.");
+  } catch (e) { syncStatus("Couldn't share your keys yet (" + e.message + ") - it retries next time.", true); }
+}
+
+// ------------------------------------------------------------------ admins: read the whole list, ask for revokes (protected keys excluded)
+function isProtectedRow(r) {
+  const pr = pol("admins.protected", {}) || {};
+  if ((pr.serials || []).map(Number).includes(r.serial)) return true;
+  const who = String(r.licensee || "").toLowerCase();
+  return (pr.licensees || []).some((n) => n && who.startsWith(String(n).toLowerCase().trim()));
+}
+async function signAsAdmin(purpose, payload) {
+  const ts = Math.floor(Date.now() / 1000);
+  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload))));
+  const sig = await L.signBytes(state.pass.secret, new TextEncoder().encode(`sills-${purpose}|${h}|${ts}`));
+  return { cert: L.bytesToHex(state.pass.cert), ts, sig: L.bytesToHex(sig) };
+}
+async function readLedger(loud) {
+  if (!state.pass || !state.pass.valid) return;
+  try {
+    const res = await fetch(actUrl() + "/ledger-read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(await signAsAdmin("ledger-read", "")) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    let added = 0;
+    for (const r of j.rows || []) {
+      const mine = state.data.rows.find((x) => x.serial === r.serial);
+      if (mine) { if ((r.note || "").length > (mine.note || "").length) mine.note = r.note; continue; }
+      const info = await L.verifyKey(r.key);
+      if (!info.valid && !info.expired) continue;
+      state.data.rows.push({ serial: info.serial, issued: r.issued, licensee: info.licensee, type: info.typeName, products: info.productText,
+        expires: info.lastDay ? L.isoDay(info.lastDay) : "never", key: r.key, note: r.note || "", source: "shared", issuer: info.issuerId });
+      ++added;
+    }
+    state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial);
+    await save(); renderKeys();
+    syncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${(j.rows || []).length} keys in the Sills Audio list` + (added ? `, ${added} new here.` : "."));
+    if (loud) toast("Key list synced.");
+  } catch (e) { syncStatus("Couldn't load the key list (" + e.message + ").", true); }
+}
+async function adminRevoke(serials, revoke) {
+  const list = serials.map(Number).filter((n) => n > 0 && n < 0x80000000);
+  const blocked = list.filter((n) => { const r = state.data.rows.find((x) => x.serial === n); return !r || isProtectedRow(r); });
+  if (blocked.length) { toast("Protected key - only Sills Audio can change #" + blocked.join(", #") + "."); return false; }
+  try {
+    const res = await fetch(actUrl() + "/admin-revoke", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serials: list, revoke, ...(await signAsAdmin("revoke", JSON.stringify({ serials: list, revoke }))) }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    if (j.refused && j.refused.length) toast("Protected - not changed: #" + j.refused.join(", #"));
+    else toast((revoke ? "Revoke" : "Restore") + " sent - it takes effect as soon as Sills Audio confirms it (usually within minutes).");
+    return !!(j.queued && j.queued.length);
+  } catch (e) { toast("Didn't go through: " + e.message); return false; }
+}
+/** Owner: keep the admins' read-only copy current and carry out their revoke / restore requests (signed here, published to GitHub). */
+async function ownerServiceSync() {
+  const rows = state.data.rows.map((r) => ({ serial: r.serial, issued: r.issued, licensee: r.licensee, type: r.type, products: r.products, expires: r.expires, key: r.key, note: r.note || "" }));
+  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(rows))))).slice(0, 32);
+  await adminCall("ledgerput", h, { rows });
+  const q = (await adminCall("revq")).queue || [];
+  if (!q.length) return;
+  const done = [];
+  for (const revoke of [true, false]) {
+    const items = q.filter((x) => x.revoke === revoke && !isProtectedRow(state.data.rows.find((r) => r.serial === x.serial) || { serial: x.serial, licensee: "" }));
+    if (items.length && (await changeRevocations(items.map((x) => x.serial), revoke))) done.push(...items.map((x) => x.qid));
+  }
+  // protected ones that slipped in are dropped
+  for (const x of q) if (isProtectedRow(state.data.rows.find((r) => r.serial === x.serial) || { serial: x.serial, licensee: "" })) done.push(x.qid);
+  if (done.length) {
+    const dh = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(done))))).slice(0, 32);
+    await adminCall("revqdone", dh, { done });
+    toast(`Applied ${done.length} admin request${done.length === 1 ? "" : "s"}.`);
+  }
 }
