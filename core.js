@@ -185,9 +185,10 @@ export async function parseAdminPass(text, publicKeyHex = PUBLIC_KEY_HEX) {
   a.cert = cert; a.secret = secret;
   try { a.name = dec.decode(b64ToBytes(parts[2])); } catch { a.name = "?"; }
   a.valid = true;
-  a.ended = dayNumber(new Date()) > a.expiryDay;
+  a.permanent = a.expiryDay >= 65535;
+  a.ended = !a.permanent && dayNumber(new Date()) > a.expiryDay;
   if (a.ended) a.error = "This admin pass ended on " + isoDay(a.lastDay) + ".";
-  a.scopeText = (a.allowedBundles ? editionName(a.allowedBundles) : productNames(a.allowedProducts)) + ", until " + isoDay(a.lastDay);
+  a.scopeText = (a.allowedBundles ? editionName(a.allowedBundles) : productNames(a.allowedProducts)) + (a.permanent ? ", permanent" : ", until " + isoDay(a.lastDay));
   return a;
 }
 
