@@ -68,6 +68,8 @@
           <label id="daysLabel">Length</label>
           <div class="chips" id="dayChips"><button data-d="30">30 days</button><button data-d="90">90 days</button><button data-d="365">1 year</button></div>
           <input id="days" type="number" inputmode="numeric" min="1" max="3650" value="30">
+          <label>Ends on</label>
+          <input id="endDate" type="date">
         </div>
         <p id="serialPreview" class="note dim"></p>
         <button id="issueBtn" class="primary">Generate key</button>
@@ -96,6 +98,7 @@
       <!-- god mode -->
       <div class="tab" id="tab-admins" hidden>
         <p id="adMasterHint" class="note dim">Needs master mode: Settings &rarr; Master mode.</p>
+        <div id="adBanner" class="banner" hidden></div>
         <label>Admin's name</label>
         <input id="adName" type="text" autocomplete="off" maxlength="60" placeholder="Who gets god mode">
         <label>Can issue</label>
@@ -109,8 +112,9 @@
           <p id="adResInfo" class="dim small"></p>
           <div class="row"><button id="adCopy">Copy</button><button id="adShare">Share</button></div>
         </div>
-        <label>Passes</label>
+        <label>Admins (tap one for details, change or switch off)</label>
         <div id="adminList" class="list"></div>
+        <div id="adDetail" class="card" hidden></div>
         <label>Switch an admin off / on (their keys too)</label>
         <div class="row"><input id="adId" type="number" inputmode="numeric" placeholder="admin #"><button id="adOff" class="danger">Switch off</button><button id="adOn">Back on</button></div>
       </div>
@@ -165,7 +169,7 @@
           <select id="lockAfter"><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option><option value="3600">1 hour</option><option value="28800">8 hours</option></select>
           <div class="row"><button id="changePin">Change PIN</button><button id="eraseAll" class="danger">Erase everything</button></div>
         </div>
-        <p class="note dim center">Sills Licence Manager 1.2 (fingerprint unlock)</p>
+        <p class="note dim center">Sills Licence Manager 1.3</p>
       </div>
     </div>
 
@@ -184,7 +188,7 @@
       <div class="grab"></div>
       <div id="sheetContent"></div>
       <div class="row wrap">
-        <button id="shCopy">Copy key</button><button id="shShare">Share</button><button id="shReissue" class="primaryLite">Change &amp; re-issue</button>
+        <button id="shCopy">Copy key</button><button id="shShare">Share</button><button id="shReissue" class="primaryLite">Edit (end date, type, products)</button>
         <button id="shRevoke" class="danger">Revoke</button><button id="shRestore" hidden>Restore</button><button id="shComputers">Computers</button>
       </div>
       <p id="shMasterHint" class="note dim small">Revoke, restore and computers need master mode (Settings).</p>

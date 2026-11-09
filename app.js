@@ -209,7 +209,7 @@ function tab(name) {
   document.querySelectorAll("nav.bottom button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", admins: "God mode", check: "Check a key", settings: "Settings" }[name];
   if (name === "keys") { renderKeys(); loadInbox(); syncLedger(false); }
-  if (name === "admins") renderAdmins();
+  if (name === "admins") { renderAdmins(); syncAdmins(); }
   window.scrollTo(0, 0);
 }
 
@@ -252,9 +252,13 @@ async function issue() {
   if (!what) { toast("This pass can't issue anything."); return; }
   const req = { licensee, type: state.type, ...what, serial: serialFor(state.data.nextN) };
   if (state.type === 2) {
-    const d = Math.max(1, parseInt($("days").value || "0", 10));
-    const from = state.replacing && state.replacing.lastDay && state.replacing.lastDay > new Date() ? state.replacing.lastDay : new Date();
-    req.lastDay = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d);
+    if ($("endDate").value) { const [y, m, dd] = $("endDate").value.split("-").map(Number); req.lastDay = new Date(y, m - 1, dd); }
+    else {
+      const d = Math.max(1, parseInt($("days").value || "0", 10));
+      const from = state.replacing && state.replacing.lastDay && state.replacing.lastDay > new Date() ? state.replacing.lastDay : new Date();
+      req.lastDay = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d);
+    }
+    if (req.lastDay < new Date(new Date().toDateString())) { toast("The end date is in the past."); return; }
   }
   let key;
   try {
@@ -375,7 +379,8 @@ async function startReissue() {
   else { state.keep = { products: info.products, bundles: info.bundles }; fillWhat(info.productText); }
   setType(info.type || 1);
   state.replacing = { serial: r.serial, lastDay: info.lastDay || null };
-  $("days").value = info.type === 2 ? 30 : 30;
+  $("days").value = 30;
+  $("endDate").value = info.lastDay ? L.isoDay(info.lastDay) : "";
   $("daysLabel").textContent = info.type === 2 ? `Add days (ends ${info.lastDay ? L.isoDay(info.lastDay) : "?"} now)` : "Length";
   $("replaceBanner").hidden = false;
   $("replaceBanner").innerHTML = `<span class="grow">Changing key #${r.serial}. You'll get a new key` + (canMaster() ? ` and #${r.serial} is revoked automatically.` : `; revoke #${r.serial} afterwards.`) + `</span><button id="cancelReplace">Cancel</button>`;
@@ -691,15 +696,70 @@ function fillAdminScope() {
   for (const e of L.EDITIONS) sel.add(new Option(e.label, "e:" + e.id));
   for (const pr of L.PRODUCTS) sel.add(new Option(pr.name.replace(/^Sills /, "") + " only", "p:" + pr.bit));
 }
+let sharedAdmins = [];   // from sills-ledger/admins.csv (PC-made passes: metadata only)
+async function syncAdmins() {
+  if (!state.data.ghToken) return;
+  try {
+    const cur = await ghFetch("admins.csv?ref=main", { cache: "no-store" }, LEDGER_API);
+    let sha, text = "";
+    if (cur.status !== 404) { const j = await cur.json(); sha = j.sha; text = b64ToText(j.content); }
+    const remote = new Map();
+    for (const line of text.split(/\r?\n/).slice(1)) { if (!line.trim()) continue; const c = parseCsvLine(line); const id = Number(c[0]); if (id > 0) remote.set(id, { line, c }); }
+    sharedAdmins = [...remote.values()].map(({ c }) => ({ id: Number(c[0]), made: c[1], name: c[2], scope: c[3] }));
+    const mine = (state.data.admins || []).filter((a) => !remote.has(a.id));
+    if (mine.length) {
+      const all = new Map(remote); for (const a of mine) all.set(a.id, { line: [a.id, a.made, csvCell(a.name), csvCell(a.scope)].join(",") });
+      const body = "admin,created,name,scope\n" + [...all.keys()].sort((x, y) => x - y).map((k) => all.get(k).line).join("\n") + "\n";
+      await ghFetch("admins.csv", { method: "PUT", body: JSON.stringify({ message: "Sync admins (phone)", content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);
+    }
+    renderAdmins();
+  } catch {}
+}
+function allAdmins() {
+  const mine = state.data.admins || [];
+  const ids = new Set(mine.map((a) => a.id));
+  return [...mine, ...sharedAdmins.filter((a) => !ids.has(a.id))].sort((a, b) => a.id - b.id);
+}
+function adminIsOff(id) { const rv = state.rev && state.rev.serials ? state.rev.serials : []; return rv.includes(L.adminRevocationId(id)); }
+function openAdmin(a) {
+  const off = adminIsOff(a.id);
+  state.lastPass = a.pass || null;
+  $("adDetail").hidden = false;
+  $("adDetail").innerHTML = `<div class="cardHead"><span>Admin #${a.id} - ${esc(a.name)}</span><span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`
+    + `<div class="kv"><div>Can issue</div><div>${esc(a.scope || "?")}</div><div>Made</div><div>${esc(a.made || "?")}${a.pass ? " on this phone" : " on your PC"}</div></div>`
+    + `<div class="row wrap">${a.pass ? `<button id="adCopyPass">Copy pass</button>` : ""}`
+    + `<button id="adChange" class="primaryLite">Change scope / end date</button>`
+    + (off ? `<button id="adBackOn">Back on</button>` : `<button id="adSwitchOff" class="danger">Switch off</button>`) + `</div>`
+    + `<p class="small dim">Change makes a new pass with the same admin number (send it to them; keys they already issued keep working). Switch off also stops every key they issued.</p>`;
+  if (a.pass) $("adCopyPass").onclick = () => copyText(a.pass, "Pass copied.");
+  $("adChange").onclick = () => startChangeAdmin(a);
+  if (off) $("adBackOn").onclick = async () => { await adminSwitch(a.id, false); openAdmin(a); };
+  else $("adSwitchOff").onclick = async () => { await adminSwitch(a.id, true); openAdmin(a); };
+  $("adDetail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function startChangeAdmin(a) {
+  state.changingAdmin = a.id;
+  $("adName").value = a.name;
+  fillAdminScope();
+  const label = (a.scope || "").split(",")[0].trim();
+  const opt = [...$("adScope").options].find((o) => o.text === label || o.text.startsWith(label));
+  if (opt) $("adScope").value = opt.value;
+  $("adDays").value = "0";
+  $("adBanner").hidden = false;
+  $("adBanner").innerHTML = `<span class="grow">Changing admin #${a.id}: pick the new scope and days (0 = permanent), then make the pass.</span><button id="adCancelChange">Cancel</button>`;
+  $("adCancelChange").onclick = () => { state.changingAdmin = null; $("adBanner").hidden = true; };
+  $("adGo").textContent = "Make new pass for #" + a.id;
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
 function renderAdmins() {
   fillAdminScope();
   const rv = state.rev && state.rev.serials ? state.rev.serials : [];
-  const list = state.data.admins || [];
+  const list = allAdmins();
   $("adminList").innerHTML = list.length ? list.map((a) => {
     const off = rv.includes(L.adminRevocationId(a.id));
-    return `<div class="item" data-admin="${a.id}"><div class="ser">A${a.id}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}</div></div>`
+    return `<div class="item" data-admin="${a.id}"><div class="ser">A${a.id}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}${a.pass ? "" : " (PC)"}</div></div>`
       + `<span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`;
-  }).join("") : `<div class="empty">God-mode passes made on this phone show up here.<br>To switch off one made on your PC, type its number below.</div>`;
+  }).join("") : `<div class="empty">No admins yet.${state.data.ghToken ? "" : "<br>Add your GitHub token in Settings to see the ones made on your PC."}</div>`;
   $("adGo").disabled = !canMaster();
   $("adMasterHint").hidden = canMaster();
 }
@@ -713,21 +773,24 @@ async function makePass() {
   if (v.startsWith("e:")) allowB = L.EDITIONS.find((e) => "e:" + e.id === v).bundles; else allowP = Number(v.slice(2));
   const days = parseInt($("adDays").value || "0", 10);
   const lastDay = days > 0 ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + days) : null;
-  const id = state.data.nextAdmin || PHONE_ADMIN_BASE;
+  const changing = state.changingAdmin || null;
+  const id = changing || state.data.nextAdmin || PHONE_ADMIN_BASE;
   let pass;
   try { pass = await L.makeAdminPass(name, id, allowP, allowB, lastDay, state.master); } catch (e) { toast(e.message); return; }
   const p = await L.parseAdminPass(pass);
   if (!p.valid) { toast(p.error); return; }
-  state.data.admins = [{ id, name, scope: p.scopeText, made: L.isoDay(new Date()), pass }, ...(state.data.admins || [])];
-  state.data.nextAdmin = id + 1;
+  state.data.admins = [{ id, name, scope: p.scopeText, made: L.isoDay(new Date()), pass }, ...(state.data.admins || []).filter((x) => x.id !== id)];
+  if (!changing) state.data.nextAdmin = id + 1;
+  state.changingAdmin = null; $("adBanner").hidden = true; $("adGo").textContent = "Make god-mode pass";
   await save();
   $("adName").value = "";
   $("adResult").hidden = false;
   $("adResKey").textContent = pass;
-  $("adResInfo").textContent = `God mode for ${name} (admin #${id}): can issue ${p.scopeText}. They paste it into their Hub's Licence page (or this app).`;
+  $("adResInfo").textContent = (changing ? `New pass for admin #${id} (${name}): ` : `God mode for ${name} (admin #${id}): `) + `can issue ${p.scopeText}. They paste it into their Hub's Licence page (or this app).`;
   state.lastPass = pass;
   await copyText(pass, "Pass copied.");
   renderAdmins();
+  syncAdmins();
 }
 async function adminSwitch(id, off) {
   if (!id) return;
@@ -768,7 +831,14 @@ function wire() {
   $("lockBtn").onclick = () => showLock("Locked");
   document.querySelectorAll("nav.bottom button").forEach((b) => (b.onclick = () => tab(b.dataset.tab)));
   document.querySelectorAll("#typeSeg button").forEach((b) => (b.onclick = () => setType(Number(b.dataset.v))));
-  document.querySelectorAll("#dayChips button").forEach((b) => (b.onclick = () => { $("days").value = b.dataset.d; }));
+  // days and the end date stay in step: either one can be typed
+  const endFromDays = () => {
+    const d = Math.max(1, parseInt($("days").value || "0", 10));
+    const from = state.replacing && state.replacing.lastDay && state.replacing.lastDay > new Date() ? state.replacing.lastDay : new Date();
+    $("endDate").value = L.isoDay(new Date(from.getFullYear(), from.getMonth(), from.getDate() + d));
+  };
+  document.querySelectorAll("#dayChips button").forEach((b) => (b.onclick = () => { $("days").value = b.dataset.d; endFromDays(); }));
+  $("days").addEventListener("input", endFromDays);
   $("issueBtn").onclick = issue;
   $("resCopy").onclick = () => state.lastKey && copyText(state.lastKey.key);
   $("resShare").onclick = () => state.lastKey && shareKey(state.lastKey.key, state.lastKey.info);
@@ -815,9 +885,9 @@ function wire() {
   $("adOn").onclick = () => adminSwitch(parseInt($("adId").value || "0", 10), false);
   $("adminList").addEventListener("click", async (e) => {
     const it = e.target.closest(".item"); if (!it) return;
-    const a = (state.data.admins || []).find((x) => x.id === Number(it.dataset.admin)); if (!a) return;
-    $("adId").value = a.id; state.lastPass = a.pass;
-    $("adResult").hidden = false; $("adResKey").textContent = a.pass; $("adResInfo").textContent = `${a.name} (admin #${a.id}): ${a.scope}.`;
+    const a = allAdmins().find((x) => x.id === Number(it.dataset.admin)); if (!a) return;
+    $("adId").value = a.id;
+    openAdmin(a);
   });
   $("checkBtn").onclick = check;
   $("nextSerial").addEventListener("change", async () => { const n = Math.max(1, Math.min(1048575, parseInt($("nextSerial").value || "1", 10))); state.data.nextN = n; await save(); updateSerial(); });
