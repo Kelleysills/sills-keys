@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111216">
-<meta name="app-version" content="25">
+<meta name="app-version" content="26">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://raw.githubusercontent.com https://api.github.com https://*.workers.dev; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Sills Licence Manager</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -216,6 +216,19 @@
   </section>
 
   <!-- key detail sheet -->
+  <div id="reqSheet" class="sheet" hidden>
+    <div class="sheetBody">
+      <div class="grab"></div>
+      <div class="cardHead"><span>Update ready for your OK</span><span id="rsWhen" class="dim small"></span></div>
+      <p id="rsAsk" class="small"></p>
+      <p class="small dim">What Claude will do</p>
+      <p id="rsPlan" class="small"></p>
+      <div id="rsFeatWrap"><p class="small dim">Include (untick anything you don't want)</p><div id="rsFeatures"></div></div>
+      <label for="rsNote">Anything to change or add? (optional)</label>
+      <textarea id="rsNote" rows="2" placeholder="e.g. make the switch red instead"></textarea>
+      <div class="row wrap"><button id="rsApprove" class="primary">Approve</button><button id="rsReject" class="danger">Reject</button><button id="rsLater" class="ghost">Later</button></div>
+    </div>
+  </div>
   <div id="sheet" class="sheet" hidden>
     <div class="sheetBody">
       <div class="grab"></div>

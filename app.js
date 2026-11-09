@@ -231,6 +231,7 @@ function enterMain() {
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
   setTimeout(ensureAlerts, 1500);
+  setTimeout(() => { const rv = new URLSearchParams(location.search).get("review"); reviewRequest(rv || null); }, 1200);
 }
 /** Keep this phone signed up for alerts: re-registers the subscription with the service on every unlock (it can get lost). */
 async function ensureAlerts() {
@@ -1024,7 +1025,8 @@ function wire() {
   $("actUrl").addEventListener("change", () => { const v = $("actUrl").value.trim(); if (v && !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(v)) { toast("That should look like https://....workers.dev"); return; } ls.set("sills.actUrl", v); renderAlerts(); });
   $("alertsOn").onclick = () => alerts(true);
   $("alertsOff").onclick = () => alerts(false);
-  navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); if (e.data === "tab:settings" && state.aes) tab("settings"); });
+  navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); if (e.data === "tab:settings" && state.aes) tab("settings");
+    if (typeof e.data === "string" && e.data.startsWith("review:") && state.aes) { tab("settings"); reviewRequest(e.data.slice(7)); } });
   $("shRestore").onclick = () => sheetRevoke(false);
   $("makeMaster").onclick = makeMaster;
   $("keepMaster").onchange = async () => {
@@ -1326,7 +1328,7 @@ async function renderRequests() {
       return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
         + `<div>${esc(r.text)}</div>` + (r.plan && r.status === "awaiting" ? `<div class="dim">Plan: ${esc(r.plan)}</div>` : "")
         + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "")
-        + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-reqok="${esc(r.id)}">Approve</button><button data-reqno="${esc(r.id)}">Reject</button></div>` : "")
+        + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-review="${esc(r.id)}">Review and approve</button></div>` : "")
         + `</div>`;
     }).join("") || `<p class="dim">No requests yet.</p>`;
   } catch (e) { $("reqList").textContent = "Couldn't load requests: " + e.message; }
@@ -1350,14 +1352,16 @@ async function sendRequest() {
 { const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
 { const b = document.getElementById("alertsAskBtn"); if (b) b.onclick = async () => { $("alertsAsk").hidden = true; await alerts(true); }; }
 { const l = document.getElementById("reqList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
-    if (b.dataset.reqok) decideRequest(b.dataset.reqok, "approved"); if (b.dataset.reqno) decideRequest(b.dataset.reqno, "rejected"); }); }
-async function decideRequest(id, status) {
+    if (b.dataset.review) reviewRequest(b.dataset.review); }); }
+async function decideRequest(id, status, include, note) {
   try {
     for (let attempt = 0; attempt < 3; ++attempt) {
       const { sha, list } = await loadRequests();
       const r = list.find((x) => x.id === id);
       if (!r) throw new Error("request not found");
       r.status = status; r.decidedAt = Date.now();
+      if (Array.isArray(include)) r.include = include;
+      if (note) r.note = note;
       const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update request " + status + " (phone)", content: textToB64(JSON.stringify(list, null, 1) + "\n"), sha, branch: "main" }) }, LEDGER_API_FOR());
       if (put.ok) { toast(status === "approved" ? "Approved - Claude builds it on its next run (within the hour)." : "Rejected."); break; }
       if (put.status !== 409 && put.status !== 422) throw new Error("GitHub " + put.status);
@@ -1365,3 +1369,38 @@ async function decideRequest(id, status) {
   } catch (e) { toast("Didn't go through: " + e.message); }
   renderRequests();
 }
+
+// ------------------------------------------------------------------ approval pop-up (opens by itself when a plan is waiting)
+let reviewing = null, reviewShownFor = "";
+async function reviewRequest(id) {
+  if (!state.data.ghToken) return;
+  let list;
+  try { list = (await loadRequests()).list; } catch { return; }
+  const r = id ? list.find((x) => x.id === id) : list.find((x) => x.status === "awaiting");
+  if (!r || r.status !== "awaiting") { if (id) toast("That request has already been decided."); return; }
+  reviewing = r; reviewShownFor = r.id;
+  $("rsAsk").textContent = "You asked: " + r.text;
+  $("rsWhen").textContent = new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  $("rsPlan").textContent = r.plan || "(no plan text)";
+  const feats = Array.isArray(r.features) ? r.features : [];
+  $("rsFeatWrap").hidden = !feats.length;
+  $("rsFeatures").innerHTML = feats.map((f, i) => `<label class="feat"><input type="checkbox" data-fid="${esc(f.id || String(i))}" ${f.on === false ? "" : "checked"}><span>${esc(f.label || f.id)}</span></label>`).join("");
+  $("rsNote").value = "";
+  $("reqSheet").hidden = false;
+}
+function closeReview() { $("reqSheet").hidden = true; reviewing = null; }
+{ const g = (id) => document.getElementById(id);
+  if (g("rsApprove")) {
+    g("rsApprove").onclick = async () => {
+      if (!reviewing) return;
+      const boxes = [...document.querySelectorAll("#rsFeatures input[data-fid]")];
+      const include = boxes.filter((b) => b.checked).map((b) => b.dataset.fid);
+      if (boxes.length && !include.length) { toast("Tick at least one part, or tap Reject."); return; }
+      const id = reviewing.id, note = g("rsNote").value.trim();
+      closeReview();
+      await decideRequest(id, "approved", boxes.length ? include : undefined, note);
+    };
+    g("rsReject").onclick = async () => { if (!reviewing) return; const id = reviewing.id, note = g("rsNote").value.trim(); closeReview(); await decideRequest(id, "rejected", undefined, note); };
+    g("rsLater").onclick = closeReview;
+    g("reqSheet").addEventListener("click", (e) => { if (e.target.id === "reqSheet") closeReview(); });
+  } }

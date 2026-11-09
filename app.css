@@ -148,3 +148,7 @@ body.holiday .card { backdrop-filter: blur(2px); }
 .instCard .dim { color: #8d929c; font-size: 12px; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(224,162,67,0.14); color: #e9c98f; }
+
+/* update approval pop-up */
+#rsFeatures label.feat { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06); font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text, #ede6d6); }
+#rsFeatures input { width: 20px; height: 20px; margin-top: 1px; flex: none; accent-color: #e0a243; }
