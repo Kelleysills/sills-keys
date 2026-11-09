@@ -452,10 +452,16 @@ const b64ToText = (b) => new TextDecoder().decode(Uint8Array.from(atob(b.replace
 const textToB64 = (t) => { const u = new TextEncoder().encode(t); let s = ""; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode(...u.subarray(i, i + 8192)); return btoa(s); };
 function rowToCsv(r) { return [r.serial, r.issued, csvCell(r.licensee), r.type, csvCell(r.products), r.expires, r.key, csvCell(r.note)].join(","); }
 let syncing = false;
+function syncStatus(t, bad) { const el = $("syncState"); if (el) { el.textContent = t; el.classList.toggle("err", !!bad); } }
 async function syncLedger(loud) {
-  if (!state.data.ghToken || syncing) { if (loud && !state.data.ghToken) toast("Add your GitHub token in Settings first."); return; }
-  syncing = true;
+  if (syncing) return;
+  if (!state.data.ghToken) { syncStatus("No GitHub token yet - add it in Settings > Master mode.", true); if (loud) toast("Add your GitHub token in Settings first."); return; }
+  syncing = true; syncStatus("Syncing with your PC's list...");
   try {
+    // a token without access to a private repo gets "404 not found", not 403 - check the repo itself first
+    const repoRes = await fetch("https://api.github.com/repos/Kelleysills/sills-ledger", { cache: "no-store", headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json" } });
+    if (repoRes.status === 401) throw new Error("GitHub token rejected - make a new one");
+    if (!repoRes.ok) throw new Error("your token can't see sills-ledger - edit the token on GitHub and add that repo (Contents: Read and write)");
     const cur = await ghFetch("keys.csv?ref=main", { cache: "no-store" }, LEDGER_API);
     let sha, text = "";
     if (cur.status !== 404) { const j = await cur.json(); sha = j.sha; text = b64ToText(j.content); }
@@ -480,13 +486,15 @@ async function syncLedger(loud) {
     if (outgoing.length) {
       const all = new Map(remote); for (const r of outgoing) all.set(r.serial, { line: rowToCsv(r) });
       const body = "serial,issued,licensee,type,products,expires,key,note\n" + [...all.keys()].sort((a, b) => a - b).map((k) => all.get(k).line).join("\n") + "\n";
-      await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);   // an empty repo has no main yet
+      const putRes = await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);   // an empty repo has no main yet
+      if (!putRes.ok) throw new Error("couldn't save to sills-ledger (GitHub " + putRes.status + ") - the token needs Contents: Read and write");
     }
     if (changed) { state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial); await save(); }
     state.data.lastSync = Date.now();
     renderKeys();
+    syncStatus(`Synced ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}: ${remote.size} key${remote.size === 1 ? "" : "s"} in the shared list` + (added ? `, ${added} new here.` : "."));
     if (loud) toast(`Key list synced${added ? ` - ${added} new from your PC` : ""}.`);
-  } catch (e) { if (loud) toast("Sync: " + e.message); }
+  } catch (e) { syncStatus("Sync failed: " + e.message, true); if (loud) toast("Sync: " + e.message); }
   finally { syncing = false; }
 }
 
