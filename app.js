@@ -348,7 +348,8 @@ function renderKeys() {
   $("keyList").innerHTML = rows.length ? rows.map((r) => {
     const [st, cls] = statusOf(r);
     return `<div class="item" data-serial="${r.serial}"><div class="ser">#${r.serial}</div><div class="who"><div class="name">${esc(r.licensee)}</div>`
-      + `<div class="what">${esc(r.products)} - ${esc(r.type)}${r.expires !== "never" ? " - ends " + esc(r.expires) : ""}${r.source === "pc" ? " - PC" : ""}</div></div>`
+      + `<div class="what">${esc(r.products)} - ${esc(r.type)}${r.expires !== "never" ? " - ends " + esc(r.expires) : ""}${r.source === "pc" ? " - PC" : ""}</div>`
+      + installLine(r.serial) + `</div>`
       + `<span class="badge ${cls}">${st}</span></div>`;
   }).join("") : `<div class="empty">No keys yet.<br>${state.data.ghToken ? "Your PC's keys arrive once its Hub (0.4.24 or later) has synced - then tap Sync with PC." : "Add your GitHub token in Settings, then tap Sync with PC to bring in your PC's keys."}</div>`;
   renderRevInfo();
@@ -383,7 +384,7 @@ async function openSheet(serial) {
     + `<div>Type</div><div>${esc(info.typeName || r.type)}</div><div>Issued</div><div>${esc(r.issued)}</div>`
     + `<div>Ends</div><div>${esc(r.expires)}</div><div>Issued by</div><div>${info.issuerId ? "admin #" + info.issuerId : "Sills Audio (PC)"}</div>`
     + (r.note ? `<div>Note</div><div>${esc(r.note)}</div>` : "") + `</div><pre class="key">${esc(r.key)}</pre>`
-    + (info.valid ? "" : `<p class="note err">${esc(info.error)}</p>`);
+    + (info.valid ? "" : `<p class="note err">${esc(info.error)}</p>`) + installDetail(r.serial);
   const isRevoked = st === "REVOKED";
   $("shRevoke").hidden = isRevoked; $("shRestore").hidden = !isRevoked;
   const adminOnly = !state.data.ghToken, locked = adminOnly && isProtectedRow(r);
@@ -736,6 +737,7 @@ async function loadInbox(loud) {
   if ($("inbox").hidden || !canMaster()) { if (!$("inbox").hidden) $("reqList").innerHTML = `<p class="small dim">Unlock master mode to see requests.</p>`; return; }
   try {
     const [r, e, pr] = await Promise.all([adminCall("requests"), adminCall("events"), adminCall("passreqs").catch(() => ({ requests: [] }))]);
+    adminCall("status").then((st) => { state.install = st.keys || {}; renderKeys(); }).catch(() => {});
     state.passReqs = pr.requests;
     const passHtml = pr.requests.map((x) =>
       `<div class="req"><div><b>${esc(x.name)}</b> wants a phone pass` + (x.note ? `<div class="dim">"${esc(x.note)}"</div>` : "") + `<div class="dim">${when(x.at)}</div></div>`
@@ -1161,6 +1163,7 @@ async function readLedger(loud) {
     if (j.error) throw new Error(j.error);
     let added = 0;
     if (Array.isArray(j.admins)) { sharedAdmins = j.admins; renderAdmins(); }
+    if (j.status) state.install = j.status;
     for (const r of j.rows || []) {
       const mine = state.data.rows.find((x) => x.serial === r.serial);
       if (mine) { if ((r.note || "").length > (mine.note || "").length) mine.note = r.note; continue; }
@@ -1232,4 +1235,31 @@ async function masterQueue(serials, revoke) {
     else toast((revoke ? "Switch-off / revoke" : "Restore") + " sent - it takes effect as soon as Sills Audio confirms it (usually within minutes).");
     return !!(j.queued && j.queued.length);
   } catch (e) { toast("Didn't go through: " + e.message); return false; }
+}
+
+// ------------------------------------------------------------------ install status (from the activation service)
+const PRODUCT_NAMES = { "hub": "Hub", "mixcoach": "Mix Coach", "mixcoach-ara": "Mix Coach ARA", "console": "Console Strip", "buscomp": "Bus Comp",
+  "eq": "Sills EQ", "comp": "Sills Comp", "vintageeq": "Vintage EQ", "chamber": "Chamber", "tune": "Tune", "headless-horseman": "Headless Horseman",
+  "finisher": "Finisher", "suite": "Ultimate Suite", "production-suite": "Production Suite", "mixing-suite": "Mixing Suite", "mastering-suite": "Mastering Suite" };
+function ago(t) {
+  const m = Math.max(0, (Date.now() - t) / 60000);
+  return m < 90 ? Math.round(m) + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " days ago";
+}
+function installLine(serial) {
+  const st = (state.install || {})[serial];
+  if (!state.install) return "";
+  if (!st || !st.machines.length) return `<div class="inst none">Not installed yet${st && st.pending ? " - asked for a 2nd computer" : ""}</div>`;
+  const seen = Math.max(...st.machines.map((m) => m.seen || m.at || 0));
+  const fresh = Date.now() - seen < 3 * 86400000;
+  return `<div class="inst ${fresh ? "on" : "old"}">Installed on ${st.machines.length} of ${st.slots} - seen ${ago(seen)}${st.pending ? " - wants a 2nd computer" : ""}</div>`;
+}
+function installDetail(serial) {
+  const st = (state.install || {})[serial];
+  if (!state.install) return "";
+  if (!st || !st.machines.length) return `<div class="instCard"><b>Not installed yet</b><div class="dim">The key hasn't been put into a Sills Audio Hub.</div></div>`;
+  return `<div class="instCard"><b>Installed on ${st.machines.length} of ${st.slots} computer${st.slots === 1 ? "" : "s"}</b>` + st.machines.map((m) =>
+    `<div class="instPc"><div><b>${esc(m.name)}</b> <span class="dim">- seen ${ago(m.seen || m.at)}</span></div>`
+    + `<div class="dim">Activated ${new Date(m.at).toLocaleDateString()}${m.hub ? " - Hub " + esc(m.hub) : ""}${m.os ? " - " + esc(m.os) : ""}</div>`
+    + (m.products && m.products.length ? `<div class="chips">${m.products.map((p) => `<span class="chip">${esc(PRODUCT_NAMES[p.id] || p.id)} ${esc(p.v)}</span>`).join("")}</div>`
+                                       : `<div class="dim">Plug-in list arrives with its next check-in (Hub 0.4.28+).</div>`) + `</div>`).join("") + `</div>`;
 }

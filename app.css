@@ -139,3 +139,12 @@ body.holiday .card { backdrop-filter: blur(2px); }
 .hatWrap > img.logo { display: block; }
 .hatWrap img.hat { position: absolute; left: -14%; top: -30%; width: 66%; height: auto;
   transform: rotate(-18deg); transform-origin: 70% 85%; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; }
+
+/* install status */
+.inst { font-size: 11px; margin-top: 2px; }
+.inst.on { color: #6fd08c; } .inst.old { color: #e9c46a; } .inst.none { color: var(--dim, #8d929c); }
+.instCard { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--panel2); }
+.instPc { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
+.instCard .dim { color: #8d929c; font-size: 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip { font-size: 11px; padding: 2px 7px; border-radius: 999px; background: rgba(224,162,67,0.14); color: #e9c98f; }
