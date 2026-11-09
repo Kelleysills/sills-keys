@@ -480,7 +480,7 @@ async function syncLedger(loud) {
     if (outgoing.length) {
       const all = new Map(remote); for (const r of outgoing) all.set(r.serial, { line: rowToCsv(r) });
       const body = "serial,issued,licensee,type,products,expires,key,note\n" + [...all.keys()].sort((a, b) => a - b).map((k) => all.get(k).line).join("\n") + "\n";
-      await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), sha, branch: "main" }) }, LEDGER_API);
+      await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API);   // an empty repo has no main yet
     }
     if (changed) { state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial); await save(); }
     state.data.lastSync = Date.now();
