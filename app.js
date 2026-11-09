@@ -227,7 +227,7 @@ function enterMain() {
   renderKeys();
   refreshMasters().then(() => { refreshRevocations(false); refreshPolicy(); });
   renderMaster(); renderAdmins(); renderAlerts(); renderBio(); renderPolicy();
-  if (new URLSearchParams(location.search).get("tab") === "keys") tab("keys");
+  { const t = new URLSearchParams(location.search).get("tab"); if (t === "keys" || t === "settings") tab(t); }
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
 }
@@ -1005,7 +1005,7 @@ function wire() {
   $("actUrl").addEventListener("change", () => { const v = $("actUrl").value.trim(); if (v && !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(v)) { toast("That should look like https://....workers.dev"); return; } ls.set("sills.actUrl", v); renderAlerts(); });
   $("alertsOn").onclick = () => alerts(true);
   $("alertsOff").onclick = () => alerts(false);
-  navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); });
+  navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); if (e.data === "tab:settings" && state.aes) tab("settings"); });
   $("shRestore").onclick = () => sheetRevoke(false);
   $("makeMaster").onclick = makeMaster;
   $("keepMaster").onchange = async () => {
@@ -1276,7 +1276,7 @@ async function loadRequests() {
   try { list = JSON.parse(b64ToText(j.content)); } catch {}
   return { sha: j.sha, list: Array.isArray(list) ? list : [] };
 }
-const REQ_LABEL = { queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
+const REQ_LABEL = { awaiting: ["Needs your OK", "bad"], approved: ["Approved - building next run", "warn"], rejected: ["Rejected", ""], queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
 async function renderRequests() {
   const card = $("reqCard");
   card.hidden = !state.data.ghToken;
@@ -1286,7 +1286,10 @@ async function renderRequests() {
     $("reqList").innerHTML = list.slice(-8).reverse().map((r) => {
       const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
       return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
-        + `<div>${esc(r.text)}</div>` + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "") + `</div>`;
+        + `<div>${esc(r.text)}</div>` + (r.plan && r.status === "awaiting" ? `<div class="dim">Plan: ${esc(r.plan)}</div>` : "")
+        + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "")
+        + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-reqok="${esc(r.id)}">Approve</button><button data-reqno="${esc(r.id)}">Reject</button></div>` : "")
+        + `</div>`;
     }).join("") || `<p class="dim">No requests yet.</p>`;
   } catch (e) { $("reqList").textContent = "Couldn't load requests: " + e.message; }
 }
@@ -1307,3 +1310,19 @@ async function sendRequest() {
   renderRequests();
 }
 { const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
+{ const l = document.getElementById("reqList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.reqok) decideRequest(b.dataset.reqok, "approved"); if (b.dataset.reqno) decideRequest(b.dataset.reqno, "rejected"); }); }
+async function decideRequest(id, status) {
+  try {
+    for (let attempt = 0; attempt < 3; ++attempt) {
+      const { sha, list } = await loadRequests();
+      const r = list.find((x) => x.id === id);
+      if (!r) throw new Error("request not found");
+      r.status = status; r.decidedAt = Date.now();
+      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update request " + status + " (phone)", content: textToB64(JSON.stringify(list, null, 1) + "\n"), sha, branch: "main" }) }, LEDGER_API_FOR());
+      if (put.ok) { toast(status === "approved" ? "Approved - Claude builds it on its next run (within the hour)." : "Rejected."); break; }
+      if (put.status !== 409 && put.status !== 422) throw new Error("GitHub " + put.status);
+    }
+  } catch (e) { toast("Didn't go through: " + e.message); }
+  renderRequests();
+}
