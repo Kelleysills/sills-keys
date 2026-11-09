@@ -51,8 +51,12 @@ async function boot() {
   }
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   state.rev = ls.get("sills.rev");
+  // trusted phones (masters.txt) from the last visit first: a pass re-made by a phone master only checks out with them
+  const cachedMasters = ls.get("sills.masters");
+  if (cachedMasters && cachedMasters.ok) { state.masters = cachedMasters; L.setExtraRoots(cachedMasters.masters.map((m) => m.hex)); }
+  loadMasters();
   wire();
-  if (ls.get("sills.vault")) showLock(); else show("setup");
+  if (ls.get("sills.vault")) showLock(); else { show("setup"); renderPassReq(); pollPassReq(); }
 }
 
 function show(which) {
@@ -80,6 +84,8 @@ async function doSetup() {
   if (!replacing || !state.pass || state.pass.adminId !== p.adminId) state.data.nextN = Math.max(1, ...state.data.rows.filter((r) => r.issuer === p.adminId).map((r) => (r.serial % 1048576) + 1));
   state.pass = p; state.passText = $("passInput").value.trim();
   await save();
+  ls.del("sills.passreq");
+  if (bioInfo()) relinkBio(a, state.salt);   // a new vault: the fingerprint must wrap the new key
   $("passInput").value = ""; $("pin1").value = ""; $("pin2").value = "";
   enterMain();
 }
@@ -103,7 +109,10 @@ async function tryUnlock() {
   const v = ls.get("sills.vault");
   try {
     const salt = unb64(v.salt);
-    await openVault(await deriveKey(pinBuf, salt), salt);
+    const pin = pinBuf;
+    await openVault(await deriveKey(pin, salt), salt);
+    const b = bioInfo();
+    if (b && (ls.get("sills.bioStale") || (b.salt && b.salt !== v.salt))) relinkBio(pin, salt);
   } catch {
     const n = fails.n + 1;
     ls.set("sills.fails", { n, until: n >= 5 ? Date.now() + 30000 * Math.pow(2, n - 5) : 0 });
@@ -117,6 +126,7 @@ async function openVault(key, salt) {
   const inner = await unseal(key, ls.get("sills.vault"));   // throws on a wrong key
   state.aes = key; state.salt = salt; state.passText = inner.passText; state.data = inner.data || { rows: [], nextN: 1 };
   state.pass = await L.parseAdminPass(state.passText);
+  if (!state.pass.valid && state.passText) { await loadMasters(); state.pass = await L.parseAdminPass(state.passText); }
   // master mode kept unlocked inside the vault (Settings > Master mode > Keep master unlocked)
   if (state.data.masterKeep) { try { state.master = L.hexToBytes(state.data.masterKeep); } catch { state.master = null; } }
   ls.set("sills.fails", { n: 0, until: 0 });
@@ -161,7 +171,8 @@ async function enableBio() {
     const id = b64(new Uint8Array(cred.rawId));
     const out = ext?.results?.first ? new Uint8Array(ext.results.first) : await bioGet(id);   // some phones only answer PRF on sign-in
     const box = await seal(await prfKey(out), { k: L.bytesToHex(raw) });
-    ls.set("sills.bio", { id, ...box });
+    ls.set("sills.bio", { id, salt: v.salt, ...box });
+    ls.del("sills.bioStale");
     toast("Fingerprint / face unlock is on.");
   } catch (e) { toast(e.name === "NotAllowedError" ? "Cancelled." : "Couldn't turn it on: " + e.message); }
   renderBio();
@@ -178,8 +189,25 @@ async function bioUnlock() {
     const key = await crypto.subtle.importKey("raw", L.hexToBytes(inner.k), "AES-GCM", false, ["encrypt", "decrypt"]);
     await openVault(key, salt);
   } catch (e) {
-    if (e.name !== "NotAllowedError") $("lockMsg").textContent = "Fingerprint didn't work - use your PIN";
+    if (e.name !== "NotAllowedError") {
+      $("lockMsg").textContent = "Fingerprint needs re-linking - enter your PIN once";
+      ls.set("sills.bioStale", true);   // the PIN unlock re-links it (one fingerprint touch)
+    } else $("lockMsg").textContent = "Touch the fingerprint button to try again, or enter your PIN";
   } finally { bioBusy = false; }
+}
+/** Re-wrap the vault key for the existing passkey (after a new PIN / pass or a failed fingerprint unlock). */
+async function relinkBio(pin, salt) {
+  const b = bioInfo(); if (!b) return;
+  try {
+    const raw = await vaultKeyBits(pin, salt);
+    const out = await bioGet(b.id);
+    const box = await seal(await prfKey(out), { k: L.bytesToHex(raw) });
+    ls.set("sills.bio", { id: b.id, salt: b64(salt), ...box });
+    ls.del("sills.bioStale");
+    toast("Fingerprint unlock is linked again.");
+  } catch (e) {
+    if (e.name !== "NotAllowedError") toast("Fingerprint unlock needs turning off and on again (Settings).");
+  }
 }
 function renderBio() {
   const on = !!bioInfo();
@@ -452,7 +480,8 @@ async function importCsv(file) {
 }
 
 // ------------------------------------------------------------------ master mode
-async function refreshMasters() {
+/** Fetch masters.txt (signed by the PC key) and trust the phones in it. */
+async function loadMasters() {
   try {
     const res = await fetch(MASTERS_URL, { cache: "no-store" });
     const v = res.ok ? await L.verifyTrustedMasters(await res.text()) : { ok: false };
@@ -461,6 +490,13 @@ async function refreshMasters() {
     else state.masters = cached;
   } catch { state.masters = ls.get("sills.masters"); }
   L.setExtraRoots(state.masters && state.masters.ok ? state.masters.masters.map((m) => m.hex) : []);
+}
+async function refreshMasters() {
+  await loadMasters();
+  if (state.aes && state.passText && !(state.pass && state.pass.valid)) {   // the pass couldn't be checked before: try again
+    state.pass = await L.parseAdminPass(state.passText);
+    renderPassCard(); updateSerial();
+  }
   renderMaster(); fillWhat(); renderKeys();
 }
 async function askPassphrase(title, twice, numeric = false) {
@@ -661,7 +697,8 @@ async function sheetRevoke(revoke) {
 }
 
 // ------------------------------------------------------------------ activation service: requests, alerts, computers
-const actUrl = () => (ls.get("sills.actUrl", "") || "").replace(/\/+$/, "");
+const DEFAULT_ACT_URL = "https://sills-activation.kelleysills.workers.dev";
+const actUrl = () => (ls.get("sills.actUrl", "") || DEFAULT_ACT_URL).replace(/\/+$/, "");
 async function adminCall(action, serial = "", extra = {}) {
   if (!actUrl()) throw new Error("add the activation service address in Settings");
   if (!canMaster() && !((await unlockMaster()) && canMaster())) throw new Error("master mode is needed");
@@ -678,15 +715,19 @@ async function loadInbox(loud) {
   $("inbox").hidden = !(actUrl() && state.data.master);
   if ($("inbox").hidden || !canMaster()) { if (!$("inbox").hidden) $("reqList").innerHTML = `<p class="small dim">Unlock master mode to see requests.</p>`; return; }
   try {
-    const [r, e] = await Promise.all([adminCall("requests"), adminCall("events")]);
-    $("reqList").innerHTML = r.requests.length ? r.requests.map((x) =>
+    const [r, e, pr] = await Promise.all([adminCall("requests"), adminCall("events"), adminCall("passreqs").catch(() => ({ requests: [] }))]);
+    state.passReqs = pr.requests;
+    const passHtml = pr.requests.map((x) =>
+      `<div class="req"><div><b>${esc(x.name)}</b> wants a phone pass` + (x.note ? `<div class="dim">"${esc(x.note)}"</div>` : "") + `<div class="dim">${when(x.at)}</div></div>`
+      + `<div class="row"><button class="primaryLite" data-passok="${x.id}">Approve...</button><button data-passno="${x.id}">Deny</button></div></div>`).join("");
+    $("reqList").innerHTML = passHtml + (r.requests.length ? r.requests.map((x) =>
       `<div class="req"><div><b>#${x.serial}</b> ${esc(x.licensee)} wants a 2nd computer: <b>${esc(x.pending.name)}</b>`
       + (x.pending.note ? `<div class="dim">"${esc(x.pending.note)}"</div>` : "") + `<div class="dim">${when(x.pending.at)} - now on ${esc(x.machines.map((m) => m.name).join(", ") || "none")}</div></div>`
       + `<div class="row"><button class="primaryLite" data-approve="${x.serial}">Approve</button><button data-deny="${x.serial}">Deny</button></div></div>`).join("")
-      : `<p class="small dim">No requests waiting.</p>`;
-    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for" };
-    $("evList").innerHTML = e.events.slice(0, 40).map((x) => `<div>${when(x.at)} - #${x.serial} ${esc(x.licensee)} ${label[x.type] || x.type} ${esc(x.name || "")}</div>`).join("") || "Nothing yet.";
-    const n = r.requests.length;
+      : (passHtml ? "" : `<p class="small dim">No requests waiting.</p>`));
+    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for", passreq: "asked for" };
+    $("evList").innerHTML = e.events.slice(0, 40).map((x) => `<div>${when(x.at)} - ${x.serial ? "#" + x.serial + " " : ""}${esc(x.licensee)} ${label[x.type] || x.type} ${esc(x.name || "")}</div>`).join("") || "Nothing yet.";
+    const n = r.requests.length + pr.requests.length;
     navigator.setAppBadge?.(n).catch?.(() => {});
     if (loud) toast(n ? `${n} request${n === 1 ? "" : "s"} waiting.` : "No requests waiting.");
   } catch (err) { $("reqList").innerHTML = `<p class="small dim">Couldn't reach the activation service (${esc(err.message)}).</p>`; }
@@ -775,7 +816,7 @@ function openAdmin(a) {
   state.lastPass = a.pass || null;
   $("adDetail").hidden = false;
   $("adDetail").innerHTML = `<div class="cardHead"><span>Admin #${adminShown(a.id)} - ${esc(a.name)}</span><span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`
-    + `<div class="kv"><div>Can issue</div><div>${esc(a.scope || "?")}</div><div>Made</div><div>${esc(a.made || "?")}${a.pass ? " on this phone" : " on your PC"}</div>`
+    + `<div class="kv"><div>Can issue</div><div>${esc(a.scope || "?")}</div><div>Made</div><div>${esc(a.made || "?")}${a.pass || a.requested ? " on this phone" : " on your PC"}</div>`
     + (adminShown(a.id) !== a.id ? `<div>Real number</div><div>${a.id} (inside the pass and its keys)</div>` : "") + `</div>`
     + `<div class="row"><input id="adShownAs" type="number" inputmode="numeric" min="1" value="${adminShown(a.id)}" style="max-width:110px"><button id="adRenumber">Show as this number</button></div>`
     + `<div class="row wrap">${a.pass ? `<button id="adCopyPass">Copy pass</button>` : ""}`
@@ -821,7 +862,7 @@ function renderAdmins() {
   const list = allAdmins();
   $("adminList").innerHTML = list.length ? list.map((a) => {
     const off = rv.includes(L.adminRevocationId(a.id));
-    return `<div class="item" data-admin="${a.id}"><div class="ser">#${adminShown(a.id)}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}${a.pass ? "" : " (PC)"}</div></div>`
+    return `<div class="item" data-admin="${a.id}"><div class="ser">#${adminShown(a.id)}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}${a.pass || a.requested ? "" : " (PC)"}</div></div>`
       + `<span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`;
   }).join("") : `<div class="empty">No admins yet.${state.data.ghToken ? "" : "<br>Add your GitHub token in Settings to see the ones made on your PC."}</div>`;
   $("adGo").disabled = !canMaster();
@@ -839,6 +880,21 @@ async function makePass() {
   const lastDay = days > 0 ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + days) : null;
   const changing = state.changingAdmin || null;
   const id = changing || state.data.nextAdmin || pol("admins.phoneIdBase", PHONE_ADMIN_BASE);
+  const req = state.approvingReq || null;
+  if (req && !changing) {   // approving a phone pass request: certify THEIR key; their secret never leaves their phone
+    try {
+      const cert = await L.certifyAdmin(id, L.hexToBytes(req.pk), allowP, allowB, lastDay, state.master);
+      await adminCall("passapprove", req.id, { cert: L.bytesToHex(cert), name });
+      const scope = (allowB ? L.EDITIONS.find((e) => e.bundles === allowB)?.label || "edition" : "selected plug-ins") + (lastDay ? ", until " + L.isoDay(lastDay) : ", permanent");
+      state.data.admins = [{ id, name, scope, made: L.isoDay(new Date()), requested: true }, ...(state.data.admins || []).filter((x) => x.id !== id)];
+      state.data.nextAdmin = id + 1;
+      state.approvingReq = null; $("adBanner").hidden = true; $("adGo").textContent = "Make god-mode pass";
+      await save(); $("adName").value = "";
+      toast(`${name} is approved - their phone unlocks on its own (admin #${id}).`);
+      renderAdmins(); syncAdmins(); loadInbox();
+    } catch (e) { toast("Didn't go through: " + e.message); }
+    return;
+  }
   let pass;
   try { pass = await L.makeAdminPass(name, id, allowP, allowB, lastDay, state.master); } catch (e) { toast(e.message); return; }
   const p = await L.parseAdminPass(pass);
@@ -917,7 +973,11 @@ function wire() {
   $("shComputers").onclick = sheetComputers;
   $("inboxRefresh").onclick = () => loadInbox(true);
   $("syncKeys").onclick = () => syncLedger(true);
-  $("reqList").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.approve) decide(b.dataset.approve, true); if (b.dataset.deny) decide(b.dataset.deny, false); });
+  $("reqList").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.approve) decide(b.dataset.approve, true); if (b.dataset.deny) decide(b.dataset.deny, false);
+    if (b.dataset.passok) startPassApproval(b.dataset.passok); if (b.dataset.passno) denyPass(b.dataset.passno); });
+  $("rqGo").onclick = requestPass;
+  $("rqCancel").onclick = () => { ls.del("sills.passreq"); renderPassReq(); };
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("setup").hidden) pollPassReq(); });
   $("actUrl").addEventListener("change", () => { const v = $("actUrl").value.trim(); if (v && !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(v)) { toast("That should look like https://....workers.dev"); return; } ls.set("sills.actUrl", v); renderAlerts(); });
   $("alertsOn").onclick = () => alerts(true);
   $("alertsOff").onclick = () => alerts(false);
@@ -960,7 +1020,7 @@ function wire() {
   $("exportCsv").onclick = exportCsv;
   $("refreshRev").onclick = () => refreshRevocations(true);
   $("lockAfter").onchange = () => ls.set("sills.lockAfter", Number($("lockAfter").value));
-  $("replacePass").onclick = () => { show("setup"); $("passInfo").textContent = "Paste the new pass and choose a PIN. Your key list stays."; };
+  $("replacePass").onclick = () => { show("setup"); renderPassReq(); $("passInfo").textContent = "Paste the new pass and choose a PIN. Your key list stays."; };
   $("changePin").onclick = () => { show("setup"); $("passInput").value = state.passText; checkPassInput(); };
   $("eraseAll").onclick = () => {
     if (!confirm("Erase the admin pass and every key stored on this phone? Keys you've already given out keep working.")) return;
@@ -976,3 +1036,64 @@ function wire() {
 }
 
 boot();
+
+// ------------------------------------------------------------------ phone pass requests
+// New phone: make an admin key pair here, send the PUBLIC half to the activation service, wait for the owner to approve on his
+// phone (he gets a notification), then join his certificate with our own secret = a working pass. The secret stays on this phone.
+async function requestPass() {
+  const name = $("rqName").value.trim();
+  if (!name) { toast("Type your name."); return; }
+  try {
+    const kp = await L.generateMaster();
+    const res = await fetch(actUrl() + "/pass-request", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name, note: $("rqNote").value.trim(), pk: kp.publicHex }) });
+    const j = await res.json();
+    if (j.error) throw new Error(j.error);
+    ls.set("sills.passreq", { id: j.id, pk: kp.publicHex, secret: L.bytesToHex(kp.secret), name, at: Date.now() });
+    toast("Request sent - you'll be let in as soon as it's approved.");
+  } catch (e) { toast("Couldn't send it: " + e.message); }
+  renderPassReq(); pollPassReq();
+}
+let passPoll = 0;
+async function pollPassReq() {
+  const r = ls.get("sills.passreq", null);
+  clearTimeout(passPoll);
+  if (!r || $("setup").hidden) return;
+  try {
+    const res = await fetch(actUrl() + "/pass-status", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: r.id, pk: r.pk }) });
+    const j = await res.json();
+    if (j.status === "approved" && j.cert) {
+      await loadMasters();   // the cert is signed by the owner's phone: trust it first
+      const text = L.passText(L.hexToBytes(j.cert), L.hexToBytes(r.secret), j.name || r.name);
+      $("passInput").value = text;
+      const p = await checkPassInput();
+      if (p) { ls.set("sills.passreq", { ...r, done: true }); renderPassReq("Approved! Choose a PIN below to finish."); $("pin1").focus(); return; }
+    } else if (j.status === "denied" || j.error === "unknown request") {
+      ls.del("sills.passreq"); renderPassReq(j.status === "denied" ? "Your request was declined." : "The request expired - send a new one."); return;
+    }
+  } catch { /* offline: try again later */ }
+  renderPassReq();
+  passPoll = setTimeout(pollPassReq, 8000);
+}
+function renderPassReq(msg) {
+  const r = ls.get("sills.passreq", null);
+  const waiting = !!(r && !r.done);
+  $("rqForm").hidden = waiting;
+  $("rqWait").hidden = !waiting;
+  if (waiting) $("rqWaitText").textContent = `Waiting for approval (asked as "${r.name}")...`;
+  if (msg !== undefined) $("rqStatus").textContent = msg;
+}
+async function startPassApproval(id) {
+  const req = (state.passReqs || []).find((x) => x.id === id);
+  if (!req) return;
+  state.approvingReq = req; state.changingAdmin = null;
+  tab("admins");
+  $("adName").value = req.name; $("adDays").value = "0";
+  $("adBanner").textContent = `Approving ${req.name}'s phone: pick what they may issue, then press Approve.`;
+  $("adBanner").hidden = false;
+  $("adGo").textContent = "Approve " + req.name;
+}
+async function denyPass(id) {
+  try { await adminCall("passdeny", id); toast("Request declined."); } catch (e) { toast("Didn't go through: " + e.message); }
+  loadInbox();
+}

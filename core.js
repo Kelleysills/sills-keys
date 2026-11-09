@@ -279,16 +279,28 @@ export async function issueMasterKey(req, secret64) {
 }
 
 /** God-mode pass (makeAdminPass in License.cpp), certificate signed by this phone's master key. lastDay null = permanent. */
-export async function makeAdminPass(adminName, adminId, allowP, allowB, lastDay, secret64) {
+/** Admin certificate (105 bytes) for someone else's admin public key, signed with a master secret. */
+export async function certifyAdmin(adminId, adminPub, allowP, allowB, lastDay, secret64) {
   if (!(adminId > 0 && adminId < 4096)) throw new Error("Admin id must be 1-4095.");
-  const kp = await generateMaster();   // the admin's own key pair
   const cert = new Uint8Array(CERT);
   for (let i = 0; i < 4; ++i) cert[i] = (adminId >>> (8 * i)) & 0xff;
-  cert.set(kp.secret.slice(32), 4);
+  cert.set(adminPub, 4);
   cert[36] = allowP & 0xff; cert[37] = allowP >> 8; cert[38] = allowB;
   const exp = lastDay ? Math.max(1, dayNumber(lastDay)) : 65535;
   cert[39] = exp & 0xff; cert[40] = exp >> 8;
   cert.set(await sign(secret64, cert.slice(0, CERT_BODY)), CERT_BODY);
+  return cert;
+}
+
+/** Pass text from a cert + the admin's own 64-byte secret. */
+export function passText(cert, secret, adminName) {
+  const blob = new Uint8Array(CERT + 64); blob.set(cert); blob.set(secret, CERT);
+  return "SILLSADMIN1." + bytesToHex(blob) + "." + btoa(String.fromCharCode(...enc.encode(adminName.trim())));
+}
+
+export async function makeAdminPass(adminName, adminId, allowP, allowB, lastDay, secret64) {
+  const kp = await generateMaster();   // the admin's own key pair
+  const cert = await certifyAdmin(adminId, kp.secret.slice(32), allowP, allowB, lastDay, secret64);
   const blob = new Uint8Array(CERT + 64); blob.set(cert); blob.set(kp.secret, CERT);
   const nameB64 = btoa(String.fromCharCode(...enc.encode(adminName.trim())));
   return "SILLSADMIN1." + bytesToHex(blob) + "." + nameB64;
