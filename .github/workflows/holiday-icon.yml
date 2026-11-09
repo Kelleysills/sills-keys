@@ -1,0 +1,23 @@
+# Switches the home-screen icon to the Santa-hat version for Nov 1 - Dec 31 and back on Jan 1 (Los Angeles time).
+# Runs every day (cron can be late or skipped), and only commits when the icon actually needs to change.
+name: Holiday icon
+on:
+  schedule:
+    - cron: "5 7 1 11 *"    # Nov 1, 00:05 PDT
+    - cron: "10 8 * * *"    # daily check, ~00:10 Pacific
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  icon:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pick the icon for today
+        run: |
+          month=$(TZ=America/Los_Angeles date +%m)
+          sed -i 's/"icon-holiday-/"icon-/g' manifest.webmanifest
+          to=normal
+          if [ "$month" = "11" ] || [ "$month" = "12" ]; then sed -i 's/"icon-/"icon-holiday-/g' manifest.webmanifest; to=holiday; fi
+          git config user.name "sills-holiday-bot"; git config user.email "actions@users.noreply.github.com"
+          if ! git diff --quiet; then git commit -am "Holiday icon: $to (month $month)" && git push; else echo "Icon already right"; fi
