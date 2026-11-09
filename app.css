@@ -135,3 +135,7 @@ body.holiday .card { backdrop-filter: blur(2px); }
 @keyframes hFlicker { 0%, 100% { opacity: 1; } 42% { opacity: .78; } 48% { opacity: .96; } 71% { opacity: .86; } }
 @keyframes hSmoke { 0% { transform: translate(0, 0) scale(.6); opacity: .45; } 100% { transform: translate(-9px, -28px) scale(1.7); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { #holiday .win, #holiday .puff { animation: none; } }
+.hatWrap { position: relative; display: inline-block; width: auto; height: auto; border-radius: 0; flex: none; line-height: 0; }
+.hatWrap > img.logo { display: block; }
+.hatWrap svg.hat { position: absolute; left: -14%; top: -30%; width: 66%; height: auto; fill: initial; stroke: none;
+  transform: rotate(-18deg); transform-origin: 70% 85%; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; }

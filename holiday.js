@@ -8,6 +8,21 @@
   document.body.classList.add("holiday");
   layer.hidden = false;
 
+  // Santa hat on every Sills logo (tilted over its top-left corner)
+  const hat = '<svg class="hat" viewBox="0 0 120 90" aria-hidden="true">' +
+    '<path d="M102 64 C96 30 70 8 36 10 C20 11 12 24 16 40 C22 30 30 26 38 28 C30 40 24 52 20 64 Z" fill="#c8352b"/>' +
+    '<path d="M60 14 C78 20 92 38 98 62" stroke="#ff7a6a" stroke-width="3" fill="none" opacity="0.35"/>' +
+    '<circle cx="16" cy="42" r="10" fill="#f4efe6"/>' +
+    '<rect x="10" y="57" width="100" height="18" rx="9" fill="#f4efe6"/>' +
+    '<rect x="10" y="68" width="100" height="7" rx="3.5" fill="#d9d2c4"/></svg>';
+  document.querySelectorAll("img.logo").forEach((img) => {
+    const wrap = document.createElement("span");
+    wrap.className = "hatWrap " + img.className;
+    img.parentNode.insertBefore(wrap, img);
+    wrap.appendChild(img);
+    wrap.insertAdjacentHTML("beforeend", hat);
+  });
+
   const canvas = document.getElementById("snow"), ctx = canvas.getContext("2d");
   const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   let w = 0, h = 0, flakes = [], last = performance.now(), running = false;
