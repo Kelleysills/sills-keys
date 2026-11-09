@@ -258,7 +258,7 @@ function tab(name) {
   $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", admins: "God mode", check: "Check a key", settings: "Settings" }[name];
   if (name === "keys") { renderKeys(); loadInbox(); syncLedger(false); }
   if (name === "admins") { renderAdmins(); syncAdmins(); }
-  if (name === "settings") renderRequests();
+  if (name === "settings") { renderRequests(); requestAnimationFrame(() => { if (document.getElementById("updList")) fitReqList(); }); }
   window.scrollTo(0, 0);
 }
 
@@ -1314,18 +1314,41 @@ async function reqEdit(edits) {
 const REQ_LABEL = { awaiting: ["Needs your OK", "bad"], approved: ["Approved - building next run", "warn"], rejected: ["Rejected", ""], queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
 let reqBusy = false, reqShownJson = "";
 const reqSeen = new Set();   // plans the pop-up already opened for (Later doesn't bring it back every 5 s)
+const reqPick = {};   // inline feature ticks per request id, so the 5-second redraw doesn't undo them
+function reqItem(r) {
+  const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
+  const id = esc(r.id), feats = Array.isArray(r.features) ? r.features : [], picks = reqPick[r.id] || {};
+  let h = `<div class="reqItem"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${when(r.at)}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
+    + `<div class="reqText">${esc(r.text)}</div>`;
+  if (r.plan && ["awaiting", "approved", "working"].includes(r.status)) h += `<div class="dim">Plan: ${esc(r.plan)}</div>`;
+  if (r.reply) h += `<div class="dim">Claude: ${esc(r.reply)}</div>`;
+  if (r.status === "awaiting") {
+    if (feats.length) h += `<div class="reqFeats">` + feats.map((f, i) => {
+      const fid = String(f.id || i), on = fid in picks ? picks[fid] : f.on !== false;
+      return `<label class="feat"><input type="checkbox" data-rid="${id}" data-fid="${esc(fid)}" ${on ? "checked" : ""}><span>${esc(f.label || fid)}</span></label>`;
+    }).join("") + `</div>`;
+    h += `<div class="row reqBtns"><button class="primaryLite small" data-ok="${id}">Approve</button><button class="danger small" data-no="${id}">Reject</button><button class="small" data-review="${id}">Add a note...</button></div>`;
+  } else if (r.status === "queued" || r.status === "question") {
+    h += `<div class="row reqBtns"><button class="danger small" data-cancel="${id}" data-st="${esc(r.status)}">Cancel request</button></div>`;
+  }
+  return h + `</div>`;
+}
+/** The list scrolls and is cut to about 4 requests high (newest first). */
+function fitReqList() {
+  const l = $("updList"), items = l.querySelectorAll(".reqItem");
+  if (items.length <= 4) { l.style.maxHeight = "none"; return; }
+  const top = items[4].offsetTop;   // #updList is position: relative, so this is the 5th item's top inside the list
+  l.style.maxHeight = top > 40 ? top + "px" : "";   // hidden tab (0) -> the CSS default
+}
 function drawRequests(list) {
-  const js = JSON.stringify(list.slice(-8));
-  if (js === reqShownJson) return;
+  const recent = list.slice(-100);
+  const js = JSON.stringify(recent);
+  if (js === reqShownJson) { fitReqList(); return; }
   reqShownJson = js;
-  $("updList").innerHTML = list.slice(-8).reverse().map((r) => {
-    const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
-    return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${when(r.at)}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
-      + `<div>${esc(r.text)}</div>` + (r.plan && r.status === "awaiting" ? `<div class="dim">Plan: ${esc(r.plan)}</div>` : "")
-      + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "")
-      + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-review="${esc(r.id)}">Review and approve</button></div>` : "")
-      + `</div>`;
-  }).join("") || `<p class="dim">No requests yet.</p>`;
+  const l = $("updList"), scroll = l.scrollTop;
+  l.innerHTML = recent.slice().reverse().map(reqItem).join("") || `<p class="dim">No requests yet.</p>`;
+  l.scrollTop = scroll;
+  fitReqList();
 }
 /** quiet = the 5-second check: no unlock prompt, no error text, and a newly waiting plan opens the approval pop-up. */
 async function renderRequests(quiet) {
@@ -1359,8 +1382,36 @@ async function sendRequest() {
 }
 { const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
 { const b = document.getElementById("alertsAskBtn"); if (b) b.onclick = async () => { $("alertsAsk").hidden = true; await alerts(true); }; }
-{ const l = document.getElementById("updList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
-    if (b.dataset.review) reviewRequest(b.dataset.review); }); }
+// tap twice for anything that can't be undone (Reject / Cancel): the first tap arms the button for 3 seconds
+function armed(b, text) {
+  if (b.dataset.armed) return true;
+  b.dataset.armed = "1"; const was = b.textContent; b.textContent = text;
+  setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = was; } }, 3000);
+  return false;
+}
+{ const l = document.getElementById("updList");
+  if (l) {
+    l.addEventListener("change", (e) => { const c = e.target; if (! c.dataset || ! c.dataset.rid) return; (reqPick[c.dataset.rid] ||= {})[c.dataset.fid] = c.checked; });
+    l.addEventListener("click", async (e) => {
+      const b = e.target.closest("button"); if (!b) return;
+      if (b.dataset.review) { reviewRequest(b.dataset.review); return; }
+      if (b.dataset.ok) {
+        const id = b.dataset.ok, boxes = [...l.querySelectorAll("input[data-rid]")].filter((c) => c.dataset.rid === id);
+        const include = boxes.filter((c) => c.checked).map((c) => c.dataset.fid);
+        if (boxes.length && !include.length) { toast("Tick at least one part, or tap Reject."); return; }
+        b.disabled = true; await decideRequest(id, "approved", boxes.length ? include : undefined); delete reqPick[id]; b.disabled = false; return;
+      }
+      if (b.dataset.no) { if (!armed(b, "Tap again to reject")) return; b.disabled = true; await decideRequest(b.dataset.no, "rejected"); return; }
+      if (b.dataset.cancel) {
+        if (!armed(b, "Tap again to cancel")) return;
+        b.disabled = true;
+        try {
+          const list = await reqEdit([{ id: b.dataset.cancel, set: { status: "rejected", reply: "Cancelled from the phone." }, ifStatus: b.dataset.st }]);
+          drawRequests(list); toast("Request cancelled.");
+        } catch (err) { toast("Didn't go through: " + err.message); b.disabled = false; }
+      }
+    });
+  } }
 async function decideRequest(id, status, include, note) {
   try {
     const set = { status };

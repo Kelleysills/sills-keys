@@ -152,3 +152,12 @@ body.holiday .card { backdrop-filter: blur(2px); }
 /* update approval pop-up */
 #rsFeatures label.feat { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06); font-size: 14px; text-transform: none; letter-spacing: 0; color: var(--text, #ede6d6); }
 #rsFeatures input { width: 20px; height: 20px; margin-top: 1px; flex: none; accent-color: #e0a243; }
+/* update requests: scrolling list about 4 requests high, approve / reject right under each one */
+#updList { position: relative; max-height: 360px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; margin-top: 12px; }
+.reqItem { padding: 10px 0; border-top: 1px solid rgba(255,255,255,0.06); }
+.reqItem:first-child { border-top: 0; }
+.reqItem .reqText { margin: 4px 0; }
+.reqItem .reqBtns { margin-top: 8px; }
+.reqFeats label.feat { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-size: 13.5px; text-transform: none; letter-spacing: 0; color: var(--text, #ede6d6); margin: 0; }
+.reqFeats input { width: 20px; height: 20px; margin: 1px 0 0; padding: 0; flex: none; accent-color: #e0a243; }
+.reqFeats label.feat span { flex: 1; text-align: left; font-weight: 400; }
