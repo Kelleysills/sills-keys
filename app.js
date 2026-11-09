@@ -238,6 +238,7 @@ function tab(name) {
   $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", admins: "God mode", check: "Check a key", settings: "Settings" }[name];
   if (name === "keys") { renderKeys(); loadInbox(); syncLedger(false); }
   if (name === "admins") { renderAdmins(); syncAdmins(); }
+  if (name === "settings") renderRequests();
   window.scrollTo(0, 0);
 }
 
@@ -1263,3 +1264,46 @@ function installDetail(serial) {
     + (m.products && m.products.length ? `<div class="chips">${m.products.map((p) => `<span class="chip">${esc(PRODUCT_NAMES[p.id] || p.id)} ${esc(p.v)}</span>`).join("")}</div>`
                                        : `<div class="dim">Plug-in list arrives with its next check-in (Hub 0.4.28+).</div>`) + `</div>`).join("") + `</div>`;
 }
+
+// ------------------------------------------------------------------ update requests (owner): requests.json in the private sills-ledger repo
+// A scheduled Claude task checks it every hour, builds the change on the PC and marks each request's status here.
+const REQ_FILE = "requests.json";
+async function loadRequests() {
+  const res = await ghFetch(REQ_FILE + "?ref=main", { cache: "no-store" }, LEDGER_API_FOR());
+  if (res.status === 404) return { sha: undefined, list: [] };
+  const j = await res.json();
+  let list = [];
+  try { list = JSON.parse(b64ToText(j.content)); } catch {}
+  return { sha: j.sha, list: Array.isArray(list) ? list : [] };
+}
+const REQ_LABEL = { queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
+async function renderRequests() {
+  const card = $("reqCard");
+  card.hidden = !state.data.ghToken;
+  if (card.hidden) return;
+  try {
+    const { list } = await loadRequests();
+    $("reqList").innerHTML = list.slice(-8).reverse().map((r) => {
+      const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
+      return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
+        + `<div>${esc(r.text)}</div>` + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "") + `</div>`;
+    }).join("") || `<p class="dim">No requests yet.</p>`;
+  } catch (e) { $("reqList").textContent = "Couldn't load requests: " + e.message; }
+}
+async function sendRequest() {
+  const text = $("reqText").value.trim();
+  if (!text) { toast("Type what you'd like changed."); return; }
+  $("reqSend").disabled = true;
+  try {
+    for (let attempt = 0; attempt < 3; ++attempt) {
+      const { sha, list } = await loadRequests();
+      list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, from: "phone", at: Date.now(), status: "queued" });
+      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update request (phone)", content: textToB64(JSON.stringify(list, null, 1) + "\n"), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API_FOR());
+      if (put.ok) { $("reqText").value = ""; toast("Sent - Claude picks it up within the hour."); break; }
+      if (put.status !== 409 && put.status !== 422) throw new Error("GitHub " + put.status);
+    }
+  } catch (e) { toast("Didn't send: " + e.message); }
+  $("reqSend").disabled = false;
+  renderRequests();
+}
+{ const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
