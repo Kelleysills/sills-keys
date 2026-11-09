@@ -135,7 +135,7 @@ function tab(name) {
   for (const t of ["issue", "keys", "admins", "check", "settings"]) $("tab-" + t).hidden = t !== name;
   document.querySelectorAll("nav.bottom button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", admins: "God mode", check: "Check a key", settings: "Settings" }[name];
-  if (name === "keys") { renderKeys(); loadInbox(); }
+  if (name === "keys") { renderKeys(); loadInbox(); syncLedger(false); }
   if (name === "admins") renderAdmins();
   window.scrollTo(0, 0);
 }
@@ -208,6 +208,7 @@ async function issue() {
   $("result").hidden = false;
   state.lastKey = { key, info };
   await copyText(key, "Key copied.");
+  syncLedger(false);
   if (replaced && canMaster() && state.data.ghToken) {
     $("resInfo").textContent += " Revoking the old key...";
     const ok = await changeRevocations([replaced], true);
@@ -439,11 +440,56 @@ function renderMaster() {
   $("ghToken").value = state.data.ghToken ? "********" : "";
   $("masterBadge").hidden = !canMaster();
 }
-async function ghFetch(path, opts = {}) {
-  const res = await fetch(API + path, { ...opts, headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) } });
-  if (!res.ok && res.status !== 404) throw new Error(res.status === 401 ? "GitHub token rejected" : res.status === 403 ? "token can't write to the releases repo" : "GitHub " + res.status);
+const LEDGER_API = "https://api.github.com/repos/Kelleysills/sills-ledger/contents/";
+async function ghFetch(path, opts = {}, base = API) {
+  const res = await fetch(base + path, { ...opts, headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) } });
+  if (!res.ok && res.status !== 404) throw new Error(res.status === 401 ? "GitHub token rejected" : res.status === 403 ? (base === API ? "token can't write to the releases repo" : "token can't reach sills-ledger") : "GitHub " + res.status);
   return res;
 }
+// ------------------------------------------------------------------ shared key list (private repo sills-ledger, keys.csv)
+// The Hub on your PC merges its issued-keys.csv in; the phone merges its own keys - one list everywhere.
+const b64ToText = (b) => new TextDecoder().decode(Uint8Array.from(atob(b.replace(/\n/g, "")), (c) => c.charCodeAt(0)));
+const textToB64 = (t) => { const u = new TextEncoder().encode(t); let s = ""; for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode(...u.subarray(i, i + 8192)); return btoa(s); };
+function rowToCsv(r) { return [r.serial, r.issued, csvCell(r.licensee), r.type, csvCell(r.products), r.expires, r.key, csvCell(r.note)].join(","); }
+let syncing = false;
+async function syncLedger(loud) {
+  if (!state.data.ghToken || syncing) { if (loud && !state.data.ghToken) toast("Add your GitHub token in Settings first."); return; }
+  syncing = true;
+  try {
+    const cur = await ghFetch("keys.csv?ref=main", { cache: "no-store" }, LEDGER_API);
+    let sha, text = "";
+    if (cur.status !== 404) { const j = await cur.json(); sha = j.sha; text = b64ToText(j.content); }
+    const remote = new Map();
+    for (const line of text.split(/\r?\n/).slice(1)) {
+      if (!line.trim()) continue;
+      const c = parseCsvLine(line); const serial = Number(c[0]);
+      if (serial > 0 && c[6]) remote.set(serial, { line, c });
+    }
+    let added = 0, changed = false;
+    for (const [serial, { c }] of remote) {
+      const mine = state.data.rows.find((r) => r.serial === serial);
+      if (mine) { if ((c[7] || "").length > (mine.note || "").length) { mine.note = c[7]; changed = true; } continue; }
+      const info = await L.verifyKey(c[6].trim());
+      if (!info.valid && !info.expired) continue;
+      state.data.rows.push({ serial, issued: c[1], licensee: info.licensee, type: info.typeName, products: info.productText,
+        expires: info.lastDay ? L.isoDay(info.lastDay) : "never", key: c[6].trim(), note: c[7] || "", source: (serial >>> 20) === (state.pass?.adminId ?? -1) ? "phone" : "pc", issuer: info.issuerId });
+      ++added; changed = true;
+    }
+    // push what the shared list doesn't have yet (or has with a shorter note)
+    const outgoing = state.data.rows.filter((r) => { const x = remote.get(r.serial); return !x || (r.note || "").length > (x.c[7] || "").length; });
+    if (outgoing.length) {
+      const all = new Map(remote); for (const r of outgoing) all.set(r.serial, { line: rowToCsv(r) });
+      const body = "serial,issued,licensee,type,products,expires,key,note\n" + [...all.keys()].sort((a, b) => a - b).map((k) => all.get(k).line).join("\n") + "\n";
+      await ghFetch("keys.csv", { method: "PUT", body: JSON.stringify({ message: `Sync key ledger (phone, ${outgoing.length})`, content: textToB64(body), sha, branch: "main" }) }, LEDGER_API);
+    }
+    if (changed) { state.data.rows.sort((a, b) => (b.issued || "").localeCompare(a.issued || "") || b.serial - a.serial); await save(); }
+    state.data.lastSync = Date.now();
+    renderKeys();
+    if (loud) toast(`Key list synced${added ? ` - ${added} new from your PC` : ""}.`);
+  } catch (e) { if (loud) toast("Sync: " + e.message); }
+  finally { syncing = false; }
+}
+
 /** add (revoke) or remove (restore) serials in the published list, signed with this phone's master key */
 async function changeRevocations(serials, revoke) {
   if (!canMaster()) { if (!(await unlockMaster()) || !canMaster()) { toast("Master mode is needed for that."); return false; } }
@@ -651,6 +697,7 @@ function wire() {
   $("shRevoke").onclick = () => sheetRevoke(true);
   $("shComputers").onclick = sheetComputers;
   $("inboxRefresh").onclick = () => loadInbox(true);
+  $("syncKeys").onclick = () => syncLedger(true);
   $("reqList").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.approve) decide(b.dataset.approve, true); if (b.dataset.deny) decide(b.dataset.deny, false); });
   $("actUrl").addEventListener("change", () => { const v = $("actUrl").value.trim(); if (v && !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(v)) { toast("That should look like https://....workers.dev"); return; } ls.set("sills.actUrl", v); renderAlerts(); });
   $("alertsOn").onclick = () => alerts(true);

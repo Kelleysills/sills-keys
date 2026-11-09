@@ -85,6 +85,7 @@
           <div id="reqList"></div>
           <details><summary class="small dim">Recent activity</summary><div id="evList" class="small"></div></details>
         </div>
+        <div class="row"><button id="syncKeys" class="small">Sync with PC</button></div>
         <input id="search" type="search" placeholder="Search name or serial">
         <p id="revInfo" class="note dim"></p>
         <div id="keyList" class="list"></div>
@@ -131,7 +132,7 @@
             <button id="unlockMaster" class="primaryLite" hidden>Unlock</button><button id="refreshMasters">Check PC trust</button></div>
           <label>GitHub token (to publish revocations)</label>
           <input id="ghToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_...">
-          <p class="small dim">Fine-grained token with Contents: read and write on sills-audio-releases only. Stored encrypted on this phone.</p>
+          <p class="small dim">Fine-grained token with Contents: read and write on <b>sills-audio-releases</b> and <b>sills-ledger</b> only. Stored encrypted on this phone.</p>
         </div>
         <div class="card"><div class="cardHead"><span>Activation &amp; alerts</span></div>
           <p class="small dim">Get a notification when a customer asks for a second computer or hits the one-computer limit. Needs master mode and the activation service (4-setup-activation.bat on your PC prints its address).</p>
