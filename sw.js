@@ -1,5 +1,5 @@
 // Sills Licence Manager service worker: the app works offline; the revocation list always comes from the network.
-const CACHE = "sills-keys-v30";
+const CACHE = "sills-keys-v31";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./core.js", "./themes.js", "./themes-default.json", "./update.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
@@ -30,9 +30,12 @@ self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
     let n = null, ep = "";
     try { ep = await myEp(); const j = await (await fetch(ACT_URL + "/notice?ep=" + ep, { cache: "no-store" })).json(); if (j.notice && Date.now() - j.notice.at < 180000) n = j.notice; } catch {}
-    if (n && n.request)   // a plan waiting for approval: tapping opens the approval pop-up in the app
-      return self.registration.showNotification(n.title, { body: (n.body ? n.body + " - " : "") + "tap to review", icon: "icon-192.png", badge: "icon-192.png",
-        tag: "sills-notice", renotify: true, data: { tab: "settings", review: n.request } });
+    if (n && n.request)   // a plan waiting for approval: Approve / Reject buttons right on the notification (Android; iPhone
+                          // shows no buttons), tapping the notification itself opens the approval pop-up in the app
+      return self.registration.showNotification(n.title, { body: (n.body ? n.body + " - " : "") + (n.code ? "Approve here or tap to review" : "tap to review"),
+        icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice", renotify: true, requireInteraction: true,
+        actions: n.code ? [{ action: "approve", title: "Approve" }, { action: "reject", title: "Reject" }] : [],
+        data: { tab: "settings", review: n.request, code: n.code || "", ep } });
     if (n) return self.registration.showNotification(n.title, { body: n.body, icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice", renotify: true, data: { tab: n.tab || "settings" } });
     return self.registration.showNotification("Sills Licence Manager", {
       body: "New licence activity - a customer may be asking for another computer. Tap to review.",
@@ -42,6 +45,24 @@ self.addEventListener("push", (e) => {
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const d = e.notification.data || {};
+  if (d.review && d.code && (e.action === "approve" || e.action === "reject")) {   // decided from the notification: one-time code
+    const decision = e.action === "approve" ? "approved" : "rejected";
+    e.waitUntil((async () => {
+      let ok = false;
+      try {
+        const j = await (await fetch(ACT_URL + "/request-decision", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ep: d.ep || await myEp(), code: d.code, id: d.review, decision }) })).json();
+        ok = !!j.ok;
+      } catch {}
+      if (ok) return self.registration.showNotification(decision === "approved" ? "Approved" : "Rejected", { icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice",
+        body: decision === "approved" ? "Claude builds it on its next run (within the hour)." : "Claude won't build it.", data: { tab: "settings" } });
+      // code already used / expired: open the app's pop-up instead
+      const cs = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      for (const c of cs) { c.postMessage("review:" + d.review); return c.focus(); }
+      return self.clients.openWindow("./?tab=settings&review=" + encodeURIComponent(d.review));
+    })());
+    return;
+  }
   if (d.review) {
     e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
       for (const c of cs) { c.postMessage("review:" + d.review); return c.focus(); }
