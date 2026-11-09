@@ -1,5 +1,5 @@
 // Sills Licence Manager service worker: the app works offline; the revocation list always comes from the network.
-const CACHE = "sills-keys-v2";
+const CACHE = "sills-keys-v4";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./core.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
@@ -11,4 +11,19 @@ self.addEventListener("fetch", (e) => {
   // network first (so updates land), cached copy when offline
   e.respondWith(fetch(e.request).then((r) => { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); return r; })
     .catch(() => caches.match(e.request).then((r) => r || caches.match("./index.html"))));
+});
+
+// alerts from the activation service arrive as empty pushes: show a generic notice, details load inside the app
+self.addEventListener("push", (e) => {
+  e.waitUntil(self.registration.showNotification("Sills Licence Manager", {
+    body: "New licence activity - a customer may be asking for another computer. Tap to review.",
+    icon: "icon-192.png", badge: "icon-192.png", tag: "sills-activity", renotify: true,
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
+    for (const c of cs) { c.postMessage("inbox"); return c.focus(); }
+    return self.clients.openWindow("./?tab=keys");
+  }));
 });

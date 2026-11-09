@@ -1,8 +1,13 @@
-// Sills Licence Manager (phone). Holds one admin pass, encrypted with a PIN; issues, looks up and re-issues keys.
+// Sills Licence Manager (phone). Holds an admin pass (and optionally this phone's own master key), encrypted with a PIN;
+// issues, looks up, re-issues and revokes keys, and makes / switches off god-mode passes.
 import * as L from "./core.js";
 
 const $ = (id) => document.getElementById(id);
-const REVOKED_URL = "https://raw.githubusercontent.com/Kelleysills/sills-audio-releases/main/revoked.txt";
+const REPO = "Kelleysills/sills-audio-releases";
+const REVOKED_URL = `https://raw.githubusercontent.com/${REPO}/main/revoked.txt`;
+const MASTERS_URL = `https://raw.githubusercontent.com/${REPO}/main/masters.txt`;
+const API = `https://api.github.com/repos/${REPO}/contents/`;
+const PHONE_ADMIN_BASE = 2048;   // god-mode passes made on the phone use admin ids 2048+ (the PC counts up from 1)
 const ls = {
   get: (k, d = null) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { toast("Couldn't save on this phone (storage full or blocked)."); } },
@@ -12,9 +17,9 @@ const ls = {
 // ------------------------------------------------------------------ vault: admin pass + key list, AES-GCM under a PIN-derived key
 const b64 = (u8) => btoa(String.fromCharCode(...u8));
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-async function deriveKey(pin, salt) {
+async function deriveKey(pin, salt, iterations = 310000) {
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveKey"]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations: 310000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
 async function seal(key, obj) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -26,7 +31,11 @@ async function unseal(key, box) {
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
-const state = { aes: null, salt: null, pass: null, passText: "", data: { rows: [], nextN: 1 }, rev: null, replacing: null, keep: null, lastActive: Date.now(), type: 1 };
+const state = { aes: null, salt: null, pass: null, passText: "", data: { rows: [], nextN: 1 }, rev: null, replacing: null, keep: null, lastActive: Date.now(), type: 1,
+  master: null /* unlocked master secret (memory only) */, masters: null /* verified masters.txt */ };
+const masterPub = () => state.data.master ? state.data.master.pub : null;
+const masterTrusted = () => !!(masterPub() && state.masters && state.masters.ok && state.masters.masters.some((m) => m.hex === masterPub()));
+const canMaster = () => !!(state.master && masterTrusted());
 
 async function save() {
   if (!state.aes) return;
@@ -78,7 +87,7 @@ async function doSetup() {
 // ------------------------------------------------------------------ lock
 let pinBuf = "";
 function showLock(msg) {
-  state.aes = null; state.pass = null; state.passText = "";
+  state.aes = null; state.pass = null; state.passText = ""; state.master = null;
   pinBuf = ""; drawPin();
   $("lockMsg").textContent = msg || "Enter your PIN";
   show("lock");
@@ -115,16 +124,19 @@ function enterMain() {
   updateSerial();
   renderPassCard();
   renderKeys();
-  refreshRevocations(false);
+  refreshMasters().then(() => refreshRevocations(false));
+  renderMaster(); renderAdmins(); renderAlerts();
+  if (new URLSearchParams(location.search).get("tab") === "keys") tab("keys");
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
 }
 
 function tab(name) {
-  for (const t of ["issue", "keys", "check", "settings"]) $("tab-" + t).hidden = t !== name;
+  for (const t of ["issue", "keys", "admins", "check", "settings"]) $("tab-" + t).hidden = t !== name;
   document.querySelectorAll("nav.bottom button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
-  $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", check: "Check a key", settings: "Settings" }[name];
-  if (name === "keys") renderKeys();
+  $("topTitle").textContent = { issue: "Issue a key", keys: "Keys", admins: "God mode", check: "Check a key", settings: "Settings" }[name];
+  if (name === "keys") { renderKeys(); loadInbox(); }
+  if (name === "admins") renderAdmins();
   window.scrollTo(0, 0);
 }
 
@@ -133,9 +145,10 @@ function fillWhat(keepLabel) {
   const sel = $("what"); sel.innerHTML = "";
   const p = state.pass;
   if (!p) return;
+  const all = canMaster();
   const allowedAll = p.allowedProducts | L.productsCoveredBy(p.allowedBundles);
-  for (const e of L.EDITIONS) if ((e.bundles & ~p.allowedBundles) === 0) sel.add(new Option(e.label, "e:" + e.id));
-  for (const pr of L.PRODUCTS) if ((pr.bit & ~allowedAll) === 0) sel.add(new Option(pr.name.replace(/^Sills /, "") + " only", "p:" + pr.bit));
+  for (const e of L.EDITIONS) if (all || (e.bundles & ~p.allowedBundles) === 0) sel.add(new Option(e.label, "e:" + e.id));
+  for (const pr of L.PRODUCTS) if (all || (pr.bit & ~allowedAll) === 0) sel.add(new Option(pr.name.replace(/^Sills /, "") + " only", "p:" + pr.bit));
   if (keepLabel) sel.add(new Option("Keep as is: " + keepLabel, "keep"), 0);
   if (!sel.options.length) sel.add(new Option("This pass can't issue anything", ""));
   sel.selectedIndex = 0;
@@ -171,15 +184,19 @@ async function issue() {
     req.lastDay = new Date(from.getFullYear(), from.getMonth(), from.getDate() + d);
   }
   let key;
-  try { key = await L.issueKey(req, state.pass); } catch (e) { toast(e.message); return; }
+  try {
+    if (L.passAllows(state.pass, req) || !canMaster()) key = await L.issueKey(req, state.pass);
+    else key = await L.issueMasterKey(req, state.master);   // beyond the pass: signed with this phone's master key
+  } catch (e) { toast(e.message); return; }
   const info = await L.verifyKey(key);
   const row = {
     serial: info.serial, issued: L.isoDay(new Date()), licensee: info.licensee, type: info.typeName, products: info.productText,
     expires: info.lastDay ? L.isoDay(info.lastDay) : "never", key, note: state.replacing ? "replaces #" + state.replacing.serial : "", source: "phone", issuer: info.issuerId,
   };
+  const replaced = state.replacing ? state.replacing.serial : 0;
   if (state.replacing) {
     const old = state.data.rows.find((r) => r.serial === state.replacing.serial);
-    if (old) old.note = "replaced by #" + info.serial + " - revoke on PC";
+    if (old) old.note = "replaced by #" + info.serial;
   }
   state.data.rows.unshift(row);
   state.data.nextN += 1;
@@ -187,9 +204,15 @@ async function issue() {
   $("resTitle").textContent = `Key #${info.serial}`;
   $("resKey").textContent = key;
   $("resInfo").textContent = `${info.licensee} - ${info.typeName} - ${info.productText}` + (info.lastDay ? ` - ends ${L.isoDay(info.lastDay)}` : "")
-    + (state.replacing ? `\nReplaces #${state.replacing.serial}: revoke that one on your PC (Licence manager > Keys).` : "");
+    + (replaced ? `\nReplaces #${replaced}.` : "");
   $("result").hidden = false;
   state.lastKey = { key, info };
+  await copyText(key, "Key copied.");
+  if (replaced && canMaster() && state.data.ghToken) {
+    $("resInfo").textContent += " Revoking the old key...";
+    const ok = await changeRevocations([replaced], true);
+    $("resInfo").textContent = $("resInfo").textContent.replace(" Revoking the old key...", ok ? ` #${replaced} revoked.` : ` Couldn't revoke #${replaced} - do it from Keys.`);
+  } else if (replaced) $("resInfo").textContent += ` Revoke #${replaced} from Keys (master mode) or on your PC.`;
   clearReplace();
   updateSerial();
   $("result").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -206,6 +229,7 @@ function clearReplace() {
 function statusOf(row, info) {
   const rv = state.rev && state.rev.serials ? state.rev.serials : [];
   if (rv.includes(row.serial)) return ["REVOKED", "bad"];
+  if (row.revoked) return ["REVOKED", "bad"];
   if (row.issuer && rv.includes(L.adminRevocationId(row.issuer))) return ["ISSUER OFF", "bad"];
   if (row.expires && row.expires !== "never" && new Date(row.expires + "T23:59:59") < new Date()) return ["EXPIRED", "warn"];
   if ((row.note || "").startsWith("replaced by")) return ["REPLACED", "warn"];
@@ -254,6 +278,11 @@ async function openSheet(serial) {
     + `<div>Ends</div><div>${esc(r.expires)}</div><div>Issued by</div><div>${info.issuerId ? "admin #" + info.issuerId : "Sills Audio (PC)"}</div>`
     + (r.note ? `<div>Note</div><div>${esc(r.note)}</div>` : "") + `</div><pre class="key">${esc(r.key)}</pre>`
     + (info.valid ? "" : `<p class="note err">${esc(info.error)}</p>`);
+  const isRevoked = st === "REVOKED";
+  $("shRevoke").hidden = isRevoked; $("shRestore").hidden = !isRevoked;
+  $("shRevoke").disabled = $("shRestore").disabled = !canMaster();
+  $("shMasterHint").hidden = canMaster();
+  $("shPcs").hidden = true; $("shComputers").disabled = !canMaster() || !actUrl();
   $("sheet").hidden = false;
 }
 async function startReissue() {
@@ -275,7 +304,7 @@ async function startReissue() {
   $("days").value = info.type === 2 ? 30 : 30;
   $("daysLabel").textContent = info.type === 2 ? `Add days (ends ${info.lastDay ? L.isoDay(info.lastDay) : "?"} now)` : "Length";
   $("replaceBanner").hidden = false;
-  $("replaceBanner").innerHTML = `<span class="grow">Changing key #${r.serial}. You'll get a new key; revoke #${r.serial} on your PC afterwards.</span><button id="cancelReplace">Cancel</button>`;
+  $("replaceBanner").innerHTML = `<span class="grow">Changing key #${r.serial}. You'll get a new key` + (canMaster() ? ` and #${r.serial} is revoked automatically.` : `; revoke #${r.serial} afterwards.`) + `</span><button id="cancelReplace">Cancel</button>`;
   $("cancelReplace").onclick = () => { clearReplace(); $("daysLabel").textContent = "Length"; };
   $("issueBtn").textContent = "Re-issue key";
   $("result").hidden = true;
@@ -294,7 +323,7 @@ async function check() {
   box.innerHTML = `<div class="cardHead"><span>Key #${i.serial}</span><span class="badge ${cls}">${st}</span></div>`
     + `<div class="kv"><div>Licensee</div><div>${esc(i.licensee)}</div><div>Gets</div><div>${esc(i.productText)}</div><div>Type</div><div>${esc(i.typeName)}</div>`
     + `<div>Issued</div><div>${L.isoDay(i.issued)}</div><div>Ends</div><div>${i.lastDay ? L.isoDay(i.lastDay) : "never"}</div>`
-    + `<div>Issued by</div><div>${i.issuerId ? "admin #" + i.issuerId : "Sills Audio (PC)"}</div></div>`;
+    + `<div>Issued by</div><div>${i.issuerId ? "admin #" + i.issuerId : "Sills Audio (master)"}</div></div>`;
 }
 
 // ------------------------------------------------------------------ settings
@@ -343,10 +372,242 @@ async function importCsv(file) {
   toast(`Imported ${added} key${added === 1 ? "" : "s"}` + (skipped ? `, skipped ${skipped} unreadable` : "") + ".");
 }
 
+// ------------------------------------------------------------------ master mode
+async function refreshMasters() {
+  try {
+    const res = await fetch(MASTERS_URL, { cache: "no-store" });
+    const v = res.ok ? await L.verifyTrustedMasters(await res.text()) : { ok: false };
+    const cached = ls.get("sills.masters");
+    if (v.ok && (!cached || !cached.ok || v.seq >= cached.seq)) { state.masters = v; ls.set("sills.masters", v); }
+    else state.masters = cached;
+  } catch { state.masters = ls.get("sills.masters"); }
+  L.setExtraRoots(state.masters && state.masters.ok ? state.masters.masters.map((m) => m.hex) : []);
+  renderMaster(); fillWhat(); renderKeys();
+}
+async function askPassphrase(title, twice) {
+  return new Promise((resolve) => {
+    $("ppTitle").textContent = title;
+    $("pp1").value = ""; $("pp2").value = ""; $("pp2Row").hidden = !twice;
+    $("ppSheet").hidden = false; $("pp1").focus();
+    $("ppOk").onclick = () => {
+      const a = $("pp1").value;
+      if (twice && a.length < 10) { toast("Use at least 10 characters."); return; }
+      if (twice && a !== $("pp2").value) { toast("The two don't match."); return; }
+      $("ppSheet").hidden = true; resolve(a);
+    };
+    $("ppCancel").onclick = () => { $("ppSheet").hidden = true; resolve(null); };
+  });
+}
+async function makeMaster() {
+  if (state.data.master && !confirm("Replace this phone's master key? The old one stops working once you remove it in the Hub.")) return;
+  const pp = await askPassphrase("Choose a master passphrase (10+ characters). It protects this phone's master key - separate from your PIN.", true);
+  if (!pp) return;
+  const m = await L.generateMaster();
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key = await deriveKey(pp, salt, 600000);
+  const box = await seal(key, { secret: L.bytesToHex(m.secret) });
+  state.data.master = { pub: m.publicHex, salt: b64(salt), ...box, made: L.isoDay(new Date()) };
+  state.master = m.secret;
+  await save();
+  renderMaster();
+  await copyText(m.publicHex, "Master key copied - paste it in the Hub.");
+}
+async function unlockMaster() {
+  if (!state.data.master) return false;
+  if (state.master) return true;
+  const pp = await askPassphrase("Master passphrase", false);
+  if (!pp) return false;
+  try {
+    const key = await deriveKey(pp, unb64(state.data.master.salt), 600000);
+    const inner = await unseal(key, state.data.master);
+    state.master = L.hexToBytes(inner.secret);
+    renderMaster(); fillWhat(); renderKeys(); renderAdmins(); if (!$("tab-keys").hidden) loadInbox();
+    toast(masterTrusted() ? "Master mode on." : "Unlocked - but your PC hasn't trusted this phone yet.");
+    return true;
+  } catch { toast("Wrong passphrase."); return false; }
+}
+function renderMaster() {
+  const m = state.data.master;
+  const st = !m ? "This phone isn't a master yet." : !masterTrusted() ? "Waiting for your PC: in the Hub, Licence manager > Admins > Second masters, paste this key and press Trust phone."
+    : state.master ? "Master mode is ON - full control from this phone." : "Trusted by your PC. Unlock it with your master passphrase to revoke, restore and make god-mode passes.";
+  $("masterState").textContent = st;
+  $("masterPub").textContent = m ? m.pub : "";
+  $("masterPub").hidden = !m;
+  $("copyMasterPub").hidden = !m;
+  $("makeMaster").textContent = m ? "Replace master key" : "Make this phone a master";
+  $("unlockMaster").hidden = !m || !!state.master;
+  $("ghToken").value = state.data.ghToken ? "********" : "";
+  $("masterBadge").hidden = !canMaster();
+}
+async function ghFetch(path, opts = {}) {
+  const res = await fetch(API + path, { ...opts, headers: { Authorization: "Bearer " + state.data.ghToken, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) } });
+  if (!res.ok && res.status !== 404) throw new Error(res.status === 401 ? "GitHub token rejected" : res.status === 403 ? "token can't write to the releases repo" : "GitHub " + res.status);
+  return res;
+}
+/** add (revoke) or remove (restore) serials in the published list, signed with this phone's master key */
+async function changeRevocations(serials, revoke) {
+  if (!canMaster()) { if (!(await unlockMaster()) || !canMaster()) { toast("Master mode is needed for that."); return false; } }
+  if (!state.data.ghToken) { toast("Add your GitHub token in Settings > Master mode first."); tab("settings"); return false; }
+  try {
+    const cur = await ghFetch("revoked.txt?ref=main", { cache: "no-store" });
+    let list = [], sha;
+    if (cur.status !== 404) {
+      const j = await cur.json(); sha = j.sha;
+      const text = new TextDecoder().decode(Uint8Array.from(atob(j.content.replace(/\n/g, "")), (c) => c.charCodeAt(0)));
+      const v = await L.verifyRevocationList(text);
+      if (!v.ok) throw new Error("the published list's signature doesn't check out");
+      list = v.serials;
+    }
+    const set = new Set(list);
+    for (const s of serials) revoke ? set.add(s >>> 0) : set.delete(s >>> 0);
+    const text = await L.signRevocationList([...set], state.master);
+    const content = btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+    await ghFetch("revoked.txt", { method: "PUT", body: JSON.stringify({ message: (revoke ? "Revoke " : "Restore ") + serials.join(", ") + " (phone)", content, sha, branch: "main" }) });
+    const v = await L.verifyRevocationList(text);
+    state.rev = { ...v, fetched: Date.now() }; ls.set("sills.rev", state.rev);
+    renderKeys(); renderAdmins();
+    return true;
+  } catch (e) { toast("Not published: " + e.message); return false; }
+}
+async function sheetRevoke(revoke) {
+  const r = sheetRow; if (!r) return;
+  if (revoke && !confirm(`Revoke key #${r.serial} (${r.licensee})? It stops working on every computer at its next Hub check.`)) return;
+  if (await changeRevocations([r.serial], revoke)) { toast(revoke ? `#${r.serial} revoked.` : `#${r.serial} restored.`); openSheet(r.serial); }
+}
+
+// ------------------------------------------------------------------ activation service: requests, alerts, computers
+const actUrl = () => (ls.get("sills.actUrl", "") || "").replace(/\/+$/, "");
+async function adminCall(action, serial = "", extra = {}) {
+  if (!actUrl()) throw new Error("add the activation service address in Settings");
+  if (!canMaster() && !((await unlockMaster()) && canMaster())) throw new Error("master mode is needed");
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = await L.signBytes(state.master, new TextEncoder().encode(`sills-admin|${action}|${serial}|${ts}`));
+  const res = await fetch(actUrl() + "/admin/" + action, { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ts, serial: serial === "" ? undefined : serial, sig: L.bytesToHex(sig), ...extra }) });
+  const j = await res.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+const when = (ms) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+async function loadInbox(loud) {
+  $("inbox").hidden = !(actUrl() && state.data.master);
+  if ($("inbox").hidden || !canMaster()) { if (!$("inbox").hidden) $("reqList").innerHTML = `<p class="small dim">Unlock master mode to see requests.</p>`; return; }
+  try {
+    const [r, e] = await Promise.all([adminCall("requests"), adminCall("events")]);
+    $("reqList").innerHTML = r.requests.length ? r.requests.map((x) =>
+      `<div class="req"><div><b>#${x.serial}</b> ${esc(x.licensee)} wants a 2nd computer: <b>${esc(x.pending.name)}</b>`
+      + (x.pending.note ? `<div class="dim">"${esc(x.pending.note)}"</div>` : "") + `<div class="dim">${when(x.pending.at)} - now on ${esc(x.machines.map((m) => m.name).join(", ") || "none")}</div></div>`
+      + `<div class="row"><button class="primaryLite" data-approve="${x.serial}">Approve</button><button data-deny="${x.serial}">Deny</button></div></div>`).join("")
+      : `<p class="small dim">No requests waiting.</p>`;
+    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for" };
+    $("evList").innerHTML = e.events.slice(0, 40).map((x) => `<div>${when(x.at)} - #${x.serial} ${esc(x.licensee)} ${label[x.type] || x.type} ${esc(x.name || "")}</div>`).join("") || "Nothing yet.";
+    const n = r.requests.length;
+    navigator.setAppBadge?.(n).catch?.(() => {});
+    if (loud) toast(n ? `${n} request${n === 1 ? "" : "s"} waiting.` : "No requests waiting.");
+  } catch (err) { $("reqList").innerHTML = `<p class="small dim">Couldn't reach the activation service (${esc(err.message)}).</p>`; }
+}
+async function decide(serial, approve) {
+  try { await adminCall(approve ? "approve" : "deny", Number(serial)); toast(approve ? `#${serial}: second computer approved.` : `#${serial}: request denied.`); }
+  catch (e) { toast("Didn't go through: " + e.message); }
+  loadInbox();
+}
+async function sheetComputers() {
+  const r = sheetRow; if (!r) return;
+  const box = $("shPcs"); box.hidden = false; box.textContent = "Loading...";
+  try {
+    const j = await adminCall("info", r.serial);
+    const rec = j.record;
+    box.innerHTML = `<div>${rec.machines.length} of ${rec.slots} computer${rec.slots === 1 ? "" : "s"}: ${esc(rec.machines.map((m) => m.name).join(", ") || "none yet")}</div>`
+      + (rec.pending ? `<div>Waiting: ${esc(rec.pending.name)}</div>` : "") + `<div class="row"><button id="shReset" class="danger">Reset computers</button></div>`;
+    $("shReset").onclick = async () => {
+      if (!confirm(`Forget every computer for #${r.serial}? The customer activates again on their next Hub check.`)) return;
+      try { await adminCall("reset", r.serial); toast("Computers reset."); sheetComputers(); } catch (e) { toast(e.message); }
+    };
+  } catch (e) { box.textContent = e.message === "unknown serial" ? "This key hasn't been activated anywhere yet." : "Couldn't load: " + e.message; }
+}
+const b64uToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+async function subHash(sub) {
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(sub))));
+  return L.bytesToHex(h).slice(0, 32);
+}
+async function alerts(on) {
+  try {
+    if (!actUrl()) throw new Error("add the activation service address first");
+    const reg = await navigator.serviceWorker.ready;
+    if (on) {
+      if ((await Notification.requestPermission()) !== "granted") throw new Error("notifications are blocked for this site");
+      const info = await (await fetch(actUrl())).json();
+      if (!info.vapid) throw new Error("the service has no alerts key yet - run 4-setup-activation.bat again");
+      const sub = (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(info.vapid) })).toJSON();
+      await adminCall("subscribe", await subHash(sub), { sub });
+      ls.set("sills.alerts", true); toast("Alerts are on.");
+    } else {
+      const s = await reg.pushManager.getSubscription();
+      if (s) { const sub = s.toJSON(); try { await adminCall("unsubscribe", await subHash(sub), { sub }); } catch {} await s.unsubscribe(); }
+      ls.set("sills.alerts", false); toast("Alerts are off.");
+    }
+  } catch (e) { toast("Alerts: " + e.message); }
+  renderAlerts();
+}
+function renderAlerts() {
+  $("actUrl").value = actUrl();
+  $("alertsState").textContent = ls.get("sills.alerts", false) ? "Alerts are on for this phone." : "Alerts are off.";
+}
+
+// ------------------------------------------------------------------ god mode (admin passes)
+function fillAdminScope() {
+  const sel = $("adScope"); if (sel.options.length) return;
+  for (const e of L.EDITIONS) sel.add(new Option(e.label, "e:" + e.id));
+  for (const pr of L.PRODUCTS) sel.add(new Option(pr.name.replace(/^Sills /, "") + " only", "p:" + pr.bit));
+}
+function renderAdmins() {
+  fillAdminScope();
+  const rv = state.rev && state.rev.serials ? state.rev.serials : [];
+  const list = state.data.admins || [];
+  $("adminList").innerHTML = list.length ? list.map((a) => {
+    const off = rv.includes(L.adminRevocationId(a.id));
+    return `<div class="item" data-admin="${a.id}"><div class="ser">A${a.id}</div><div class="who"><div class="name">${esc(a.name)}</div><div class="what">${esc(a.scope)} - made ${esc(a.made)}</div></div>`
+      + `<span class="badge ${off ? "bad" : "good"}">${off ? "OFF" : "ON"}</span></div>`;
+  }).join("") : `<div class="empty">God-mode passes made on this phone show up here.<br>To switch off one made on your PC, type its number below.</div>`;
+  $("adGo").disabled = !canMaster();
+  $("adMasterHint").hidden = canMaster();
+}
+async function makePass() {
+  if (!canMaster() && !(await unlockMaster())) return;
+  if (!canMaster()) { toast("Your PC hasn't trusted this phone as a master yet."); return; }
+  const name = $("adName").value.trim();
+  if (!name) { toast("Type the admin's name."); return; }
+  const v = $("adScope").value;
+  let allowP = 0, allowB = 0;
+  if (v.startsWith("e:")) allowB = L.EDITIONS.find((e) => "e:" + e.id === v).bundles; else allowP = Number(v.slice(2));
+  const days = parseInt($("adDays").value || "0", 10);
+  const lastDay = days > 0 ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + days) : null;
+  const id = state.data.nextAdmin || PHONE_ADMIN_BASE;
+  let pass;
+  try { pass = await L.makeAdminPass(name, id, allowP, allowB, lastDay, state.master); } catch (e) { toast(e.message); return; }
+  const p = await L.parseAdminPass(pass);
+  if (!p.valid) { toast(p.error); return; }
+  state.data.admins = [{ id, name, scope: p.scopeText, made: L.isoDay(new Date()), pass }, ...(state.data.admins || [])];
+  state.data.nextAdmin = id + 1;
+  await save();
+  $("adName").value = "";
+  $("adResult").hidden = false;
+  $("adResKey").textContent = pass;
+  $("adResInfo").textContent = `God mode for ${name} (admin #${id}): can issue ${p.scopeText}. They paste it into their Hub's Licence page (or this app).`;
+  state.lastPass = pass;
+  await copyText(pass, "Pass copied.");
+  renderAdmins();
+}
+async function adminSwitch(id, off) {
+  if (!id) return;
+  if (off && !confirm(`Switch off admin #${id}? Every key they issued stops working too.`)) return;
+  if (await changeRevocations([L.adminRevocationId(id)], off)) toast(off ? `Admin #${id} switched off.` : `Admin #${id} back on.`);
+}
+
 // ------------------------------------------------------------------ helpers / wiring
 let toastTimer;
 function toast(t) { const el = $("toast"); el.textContent = t; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => (el.hidden = true), 3200); }
-async function copyText(t) { try { await navigator.clipboard.writeText(t); toast("Copied."); } catch { toast("Couldn't copy - long-press the key to select it."); } }
+async function copyText(t, msg = "Copied.") { try { await navigator.clipboard.writeText(t); toast(msg); return true; } catch { toast("Couldn't copy - long-press the key to select it."); return false; } }
 async function shareKey(key, info) {
   const text = `Your Sills Audio licence key:\n\n${key}\n\nOpen Sills Audio Hub > Licence, paste the key and press Activate.`;
   if (navigator.share) { try { await navigator.share({ title: "Sills Audio licence key", text }); return; } catch { return; } }
@@ -387,6 +648,35 @@ function wire() {
   $("shCopy").onclick = () => sheetRow && copyText(sheetRow.key);
   $("shShare").onclick = () => sheetRow && shareKey(sheetRow.key);
   $("shReissue").onclick = startReissue;
+  $("shRevoke").onclick = () => sheetRevoke(true);
+  $("shComputers").onclick = sheetComputers;
+  $("inboxRefresh").onclick = () => loadInbox(true);
+  $("reqList").addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return; if (b.dataset.approve) decide(b.dataset.approve, true); if (b.dataset.deny) decide(b.dataset.deny, false); });
+  $("actUrl").addEventListener("change", () => { const v = $("actUrl").value.trim(); if (v && !/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(v)) { toast("That should look like https://....workers.dev"); return; } ls.set("sills.actUrl", v); renderAlerts(); });
+  $("alertsOn").onclick = () => alerts(true);
+  $("alertsOff").onclick = () => alerts(false);
+  navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); });
+  $("shRestore").onclick = () => sheetRevoke(false);
+  $("makeMaster").onclick = makeMaster;
+  $("unlockMaster").onclick = unlockMaster;
+  $("copyMasterPub").onclick = () => masterPub() && copyText(masterPub(), "Master key copied.");
+  $("refreshMasters").onclick = () => refreshMasters().then(() => toast(masterTrusted() ? "Your PC trusts this phone." : "Not trusted yet."));
+  $("ghToken").addEventListener("change", async () => {
+    const t = $("ghToken").value.trim();
+    if (t === "********") return;
+    state.data.ghToken = t || null; await save(); renderMaster(); toast(t ? "Token saved (encrypted on this phone)." : "Token removed.");
+  });
+  $("adGo").onclick = makePass;
+  $("adCopy").onclick = () => state.lastPass && copyText(state.lastPass);
+  $("adShare").onclick = () => state.lastPass && navigator.share && navigator.share({ title: "Sills Audio god-mode pass", text: state.lastPass }).catch(() => {});
+  $("adOff").onclick = () => adminSwitch(parseInt($("adId").value || "0", 10), true);
+  $("adOn").onclick = () => adminSwitch(parseInt($("adId").value || "0", 10), false);
+  $("adminList").addEventListener("click", async (e) => {
+    const it = e.target.closest(".item"); if (!it) return;
+    const a = (state.data.admins || []).find((x) => x.id === Number(it.dataset.admin)); if (!a) return;
+    $("adId").value = a.id; state.lastPass = a.pass;
+    $("adResult").hidden = false; $("adResKey").textContent = a.pass; $("adResInfo").textContent = `${a.name} (admin #${a.id}): ${a.scope}.`;
+  });
   $("checkBtn").onclick = check;
   $("nextSerial").addEventListener("change", async () => { const n = Math.max(1, Math.min(1048575, parseInt($("nextSerial").value || "1", 10))); state.data.nextN = n; await save(); updateSerial(); });
   $("importCsv").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) importCsv(f); e.target.value = ""; });
@@ -398,7 +688,7 @@ function wire() {
   $("eraseAll").onclick = () => {
     if (!confirm("Erase the admin pass and every key stored on this phone? Keys you've already given out keep working.")) return;
     ls.del("sills.vault"); ls.del("sills.fails");
-    state.aes = null; state.pass = null; state.data = { rows: [], nextN: 1 };
+    state.aes = null; state.pass = null; state.master = null; state.data = { rows: [], nextN: 1 };
     show("setup");
   };
   // auto lock

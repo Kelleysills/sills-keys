@@ -101,3 +101,11 @@ nav.bottom button.on { color: var(--accent); }
 .filebtn { display: grid; place-items: center; margin: 0; font-size: 16px; letter-spacing: 0; text-transform: none; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; min-height: 46px; font-weight: 600; cursor: pointer; }
 .grow { flex: 1; }
 .err { color: var(--bad); }
+button:disabled { opacity: 0.45; }
+.brand .badge { font-size: 9px; padding: 1px 6px; margin-left: 6px; vertical-align: middle; }
+#ppSheet input { margin-bottom: 10px; }
+.req { border-top: 1px solid var(--line, #262c35); padding: 10px 0; font-size: 13.5px; }
+.req:first-child { border-top: 0; }
+button.small { font-size: 12px; padding: 4px 10px; min-height: 0; }
+details summary { margin-top: 8px; cursor: pointer; }
+#evList div { padding: 3px 0; }

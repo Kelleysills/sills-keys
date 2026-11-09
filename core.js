@@ -110,6 +110,14 @@ export async function ed25519Supported() {
   try { await subtle.importKey("raw", hexToBytes(PUBLIC_KEY_HEX), { name: "Ed25519" }, false, ["verify"]); return true; }
   catch { return false; }
 }
+// extra master keys the PC master trusts (masters.txt); set by the app after verifying that file
+let extraRoots = [];
+export function setExtraRoots(hexList) { extraRoots = (hexList || []).filter((h) => /^[0-9a-f]{64}$/i.test(h)).map((h) => h.toLowerCase()); }
+export const trustedRootHexes = () => [PUBLIC_KEY_HEX, ...extraRoots];
+async function verifyAnyRoot(sig, msg, onlyHex) {
+  for (const h of onlyHex ? [onlyHex] : trustedRootHexes()) if (await verifySig(hexToBytes(h), sig, msg)) return true;
+  return false;
+}
 async function verifySig(pub, sig, msg) {
   const k = await subtle.importKey("raw", pub, { name: "Ed25519" }, false, ["verify"]);
   return subtle.verify({ name: "Ed25519" }, k, sig, msg);
@@ -126,7 +134,7 @@ const u16 = (d, i) => d[i] | (d[i + 1] << 8);
 const u32 = (d, i) => (d[i] | (d[i + 1] << 8) | (d[i + 2] << 16) | (d[i + 3] << 24)) >>> 0;
 
 /** Decode + verify a licence key (same rules as verifyKey in License.cpp). */
-export async function verifyKey(keyText, publicKeyHex = PUBLIC_KEY_HEX) {
+export async function verifyKey(keyText, publicKeyHex = null) {
   const info = { valid: false, error: "" };
   let body = keyText.toUpperCase().replace(/[\s-]/g, "");
   if (body.startsWith("SILLS")) body = body.slice(5);
@@ -136,16 +144,15 @@ export async function verifyKey(keyText, publicKeyHex = PUBLIC_KEY_HEX) {
   const delegated = d[0] === 2, nameLen = d[13];
   const signedLen = HEADER + nameLen + (delegated ? CERT : 0);
   if (nameLen > MAX_NAME || d.length < signedLen + SIG) { info.error = "That key is incomplete - check it was copied in full."; return info; }
-  const master = hexToBytes(publicKeyHex);
   if (delegated) {
     const cert = d.slice(HEADER + nameLen, HEADER + nameLen + CERT);
-    if (!(await verifySig(master, cert.slice(CERT_BODY), cert.slice(0, CERT_BODY)))) { info.error = "That key's issuer isn't recognised (certificate check failed)."; return info; }
+    if (!(await verifyAnyRoot(cert.slice(CERT_BODY), cert.slice(0, CERT_BODY), publicKeyHex))) { info.error = "That key's issuer isn't recognised (certificate check failed)."; return info; }
     if (!(await verifySig(cert.slice(4, 36), d.slice(signedLen, signedLen + SIG), d.slice(0, signedLen)))) { info.error = "That key isn't valid (signature check failed)."; return info; }
     const allowP = u16(cert, 36), allowB = cert[38], certExp = u16(cert, 39);
     const allowedAll = allowP | productsCoveredBy(allowB);
     if ((d[12] & ~allowB) || (u16(d, 2) & ~allowedAll) || u16(d, 4) > certExp) { info.error = "That key goes beyond what its issuer was allowed to give."; return info; }
     info.issuerId = u32(cert, 0);
-  } else if (!(await verifySig(master, d.slice(signedLen, signedLen + SIG), d.slice(0, signedLen)))) {
+  } else if (!(await verifyAnyRoot(d.slice(signedLen, signedLen + SIG), d.slice(0, signedLen), publicKeyHex))) {
     info.error = "That key isn't valid (signature check failed)."; return info;
   }
   info.type = d[1];
@@ -168,14 +175,14 @@ export async function verifyKey(keyText, publicKeyHex = PUBLIC_KEY_HEX) {
 }
 
 /** Parse + check an admin pass: SILLSADMIN1.<hex cert(105)+secret(64)>.<base64 name> */
-export async function parseAdminPass(text, publicKeyHex = PUBLIC_KEY_HEX) {
+export async function parseAdminPass(text, publicKeyHex = null) {
   const a = { valid: false, error: "" };
   const parts = text.trim().split(".");
   if (parts.length !== 3 || parts[0] !== "SILLSADMIN1") { a.error = "That isn't a Sills Audio admin pass."; return a; }
   const blob = hexToBytes(parts[1]);
   if (blob.length !== CERT + 64) { a.error = "That admin pass is incomplete."; return a; }
   const cert = blob.slice(0, CERT), secret = blob.slice(CERT);
-  if (!(await verifySig(hexToBytes(publicKeyHex), cert.slice(CERT_BODY), cert.slice(0, CERT_BODY)))) { a.error = "That admin pass wasn't issued by Sills Audio."; return a; }
+  if (!(await verifyAnyRoot(cert.slice(CERT_BODY), cert.slice(0, CERT_BODY), publicKeyHex))) { a.error = "That admin pass wasn't issued by Sills Audio."; return a; }
   if (bytesToHex(secret.slice(32)) !== bytesToHex(cert.slice(4, 36))) { a.error = "That admin pass is damaged."; return a; }
   a.adminId = u32(cert, 0);
   a.allowedProducts = u16(cert, 36);
@@ -227,15 +234,85 @@ export async function issueKey(req, pass) {
 }
 
 /** Verify the published revocation list; returns { ok, serials, adminsOff, updated } */
-export async function verifyRevocationList(text, publicKeyHex = PUBLIC_KEY_HEX) {
+export async function verifyRevocationList(text, publicKeyHex = null) {
   const t = text.replace(/\r\n/g, "\n");
   const sigPos = t.lastIndexOf("\nsig ");
   if (!t.startsWith("SILLS-REVOKED 1\n") || sigPos < 0) return { ok: false };
   const body = t.slice(0, sigPos + 1);
   const sig = hexToBytes(t.slice(sigPos + 5).trim());
-  if (sig.length !== 64 || !(await verifySig(hexToBytes(publicKeyHex), sig, enc.encode(body)))) return { ok: false };
+  if (sig.length !== 64 || !(await verifyAnyRoot(sig, enc.encode(body), publicKeyHex))) return { ok: false };
   const serials = body.split("\n").map((l) => l.trim()).filter((l) => /^\d+$/.test(l)).map(Number);
   const updated = (body.match(/^updated (.*)$/m) || [])[1] || "";
   return { ok: true, serials, updated };
 }
 export const adminRevocationId = (adminId) => (0x80000000 | adminId) >>> 0;
+
+// ================================================================== master mode (this phone as a second master)
+/** New master key pair, made on this phone. Returns { secret (64 bytes: seed || public), publicHex }. */
+export async function generateMaster() {
+  const kp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  const pk8 = new Uint8Array(await subtle.exportKey("pkcs8", kp.privateKey));
+  const pub = new Uint8Array(await subtle.exportKey("raw", kp.publicKey));
+  const secret = new Uint8Array(64);
+  secret.set(pk8.slice(pk8.length - 32)); secret.set(pub, 32);
+  return { secret, publicHex: bytesToHex(pub) };
+}
+
+/** Master-signed key (format 1, issueKey in License.cpp): any edition / products. */
+export async function issueMasterKey(req, secret64) {
+  let name = enc.encode(req.licensee.trim()).slice(0, MAX_NAME);
+  if (!name.length) throw new Error("Enter the licensee's name.");
+  if (req.type === KeyType.Subscription && !req.lastDay) throw new Error("Subscriptions need an end date.");
+  const d = new Uint8Array(HEADER + name.length + SIG);
+  const issued = dayNumber(new Date());
+  const exp = req.type === KeyType.Subscription ? Math.max(1, dayNumber(req.lastDay)) : 0;
+  const products = (req.products | productsCoveredBy(req.bundles)) & 0xffff;
+  d[0] = 1; d[1] = req.type;
+  d[2] = products & 0xff; d[3] = products >> 8;
+  d[4] = issued & 0xff; d[5] = issued >> 8;
+  d[6] = exp & 0xff; d[7] = exp >> 8;
+  for (let i = 0; i < 4; ++i) d[8 + i] = (req.serial >>> (8 * i)) & 0xff;
+  d[12] = req.bundles; d[13] = name.length;
+  d.set(name, HEADER);
+  d.set(await sign(secret64, d.slice(0, HEADER + name.length)), HEADER + name.length);
+  return groupKey(b32encode(d));
+}
+
+/** God-mode pass (makeAdminPass in License.cpp), certificate signed by this phone's master key. lastDay null = permanent. */
+export async function makeAdminPass(adminName, adminId, allowP, allowB, lastDay, secret64) {
+  if (!(adminId > 0 && adminId < 4096)) throw new Error("Admin id must be 1-4095.");
+  const kp = await generateMaster();   // the admin's own key pair
+  const cert = new Uint8Array(CERT);
+  for (let i = 0; i < 4; ++i) cert[i] = (adminId >>> (8 * i)) & 0xff;
+  cert.set(kp.secret.slice(32), 4);
+  cert[36] = allowP & 0xff; cert[37] = allowP >> 8; cert[38] = allowB;
+  const exp = lastDay ? Math.max(1, dayNumber(lastDay)) : 65535;
+  cert[39] = exp & 0xff; cert[40] = exp >> 8;
+  cert.set(await sign(secret64, cert.slice(0, CERT_BODY)), CERT_BODY);
+  const blob = new Uint8Array(CERT + 64); blob.set(cert); blob.set(kp.secret, CERT);
+  const nameB64 = btoa(String.fromCharCode(...enc.encode(adminName.trim())));
+  return "SILLSADMIN1." + bytesToHex(blob) + "." + nameB64;
+}
+
+/** Ed25519 signature over raw bytes (admin calls to the activation service). */
+export const signBytes = (secret64, msg) => sign(secret64, msg);
+
+/** Same text format as signRevocationList in License.cpp. */
+export async function signRevocationList(serials, secret64) {
+  let body = "SILLS-REVOKED 1\nupdated " + isoDay(new Date()) + "\n";
+  for (const s of [...new Set(serials)].sort((a, b) => a - b)) body += s + "\n";
+  return body + "sig " + bytesToHex(await sign(secret64, enc.encode(body))) + "\n";
+}
+
+/** masters.txt: only the built-in (PC) key may sign it. Returns { ok, seq, masters: [{hex, name}] } */
+export async function verifyTrustedMasters(text) {
+  const t = text.replace(/\r\n/g, "\n");
+  const sigPos = t.lastIndexOf("\nsig ");
+  if (!t.startsWith("SILLS-MASTERS 1\n") || sigPos < 0) return { ok: false };
+  const body = t.slice(0, sigPos + 1);
+  const sig = hexToBytes(t.slice(sigPos + 5).trim());
+  if (sig.length !== 64 || !(await verifySig(hexToBytes(PUBLIC_KEY_HEX), sig, enc.encode(body)))) return { ok: false };
+  const seq = Number((body.match(/^seq (\d+)$/m) || [])[1] || 0);
+  const masters = body.split("\n").map((l) => l.trim()).filter((l) => /^[0-9a-fA-F]{64}/.test(l)).map((l) => ({ hex: l.slice(0, 64).toLowerCase(), name: l.slice(64).trim() }));
+  return { ok: true, seq, masters };
+}

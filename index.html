@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111216">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://raw.githubusercontent.com; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://raw.githubusercontent.com https://api.github.com https://*.workers.dev; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Sills Licence Manager</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png">
@@ -38,14 +38,14 @@
     <label>PIN again</label>
     <input id="pin2" type="password" inputmode="numeric" autocomplete="new-password" maxlength="12">
     <button id="setupGo" class="primary">Save and unlock</button>
-    <p class="note dim">The pass is stored on this phone only, encrypted with your PIN. Your master signing key never leaves your PC.</p>
+    <p class="note dim">The pass is stored on this phone only, encrypted with your PIN. Your PC's master key never leaves your PC; this phone can get its own (Settings &rarr; Master mode).</p>
   </section>
 
   <!-- main -->
   <section id="main" hidden>
     <header class="top">
       <img src="icon-192.png" alt="" class="logo tiny">
-      <div class="titles"><div class="brand">SILLS AUDIO</div><div id="topTitle" class="title">Issue a key</div></div>
+      <div class="titles"><div class="brand">SILLS AUDIO <span id="masterBadge" class="badge good" hidden>MASTER</span></div><div id="topTitle" class="title">Issue a key</div></div>
       <button id="lockBtn" class="icon" aria-label="Lock">
         <svg viewBox="0 0 24 24"><path d="M7 10V7a5 5 0 0 1 10 0v3"/><rect x="5" y="10" width="14" height="11" rx="2"/></svg>
       </button>
@@ -80,9 +80,36 @@
 
       <!-- keys -->
       <div class="tab" id="tab-keys" hidden>
+        <div id="inbox" class="card" hidden>
+          <div class="cardHead"><span>Requests &amp; alerts</span><button id="inboxRefresh" class="ghost small">Refresh</button></div>
+          <div id="reqList"></div>
+          <details><summary class="small dim">Recent activity</summary><div id="evList" class="small"></div></details>
+        </div>
         <input id="search" type="search" placeholder="Search name or serial">
         <p id="revInfo" class="note dim"></p>
         <div id="keyList" class="list"></div>
+      </div>
+
+      <!-- god mode -->
+      <div class="tab" id="tab-admins" hidden>
+        <p id="adMasterHint" class="note dim">Needs master mode: Settings &rarr; Master mode.</p>
+        <label>Admin's name</label>
+        <input id="adName" type="text" autocomplete="off" maxlength="60" placeholder="Who gets god mode">
+        <label>Can issue</label>
+        <select id="adScope"></select>
+        <label>Days (0 = permanent)</label>
+        <input id="adDays" type="number" inputmode="numeric" min="0" max="3650" value="0">
+        <button id="adGo" class="primary">Make god-mode pass</button>
+        <div id="adResult" class="card" hidden>
+          <div class="cardHead"><span>God-mode pass</span><span class="badge good">COPIED</span></div>
+          <pre id="adResKey" class="key"></pre>
+          <p id="adResInfo" class="dim small"></p>
+          <div class="row"><button id="adCopy">Copy</button><button id="adShare">Share</button></div>
+        </div>
+        <label>Passes</label>
+        <div id="adminList" class="list"></div>
+        <label>Switch an admin off / on (their keys too)</label>
+        <div class="row"><input id="adId" type="number" inputmode="numeric" placeholder="admin #"><button id="adOff" class="danger">Switch off</button><button id="adOn">Back on</button></div>
       </div>
 
       <!-- check -->
@@ -97,6 +124,22 @@
       <div class="tab" id="tab-settings" hidden>
         <div class="card"><div class="cardHead"><span>This phone's admin pass</span></div><div id="passCard" class="small"></div>
           <div class="row"><button id="replacePass">Replace pass</button></div></div>
+        <div class="card"><div class="cardHead"><span>Master mode</span></div>
+          <p id="masterState" class="small"></p>
+          <pre id="masterPub" class="key" hidden></pre>
+          <div class="row wrap"><button id="makeMaster">Make this phone a master</button><button id="copyMasterPub" hidden>Copy master key</button>
+            <button id="unlockMaster" class="primaryLite" hidden>Unlock</button><button id="refreshMasters">Check PC trust</button></div>
+          <label>GitHub token (to publish revocations)</label>
+          <input id="ghToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_...">
+          <p class="small dim">Fine-grained token with Contents: read and write on sills-audio-releases only. Stored encrypted on this phone.</p>
+        </div>
+        <div class="card"><div class="cardHead"><span>Activation &amp; alerts</span></div>
+          <p class="small dim">Get a notification when a customer asks for a second computer or hits the one-computer limit. Needs master mode and the activation service (4-setup-activation.bat on your PC prints its address).</p>
+          <label>Activation service address</label>
+          <input id="actUrl" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://sills-activation.....workers.dev">
+          <p id="alertsState" class="small dim"></p>
+          <div class="row"><button id="alertsOn" class="primaryLite">Turn on alerts</button><button id="alertsOff">Turn off</button></div>
+        </div>
         <div class="card"><div class="cardHead"><span>Serial numbers</span></div>
           <p class="small dim">Keys from this phone use serials in its own admin range, so they never clash with your PC's.</p>
           <label>Next serial</label><input id="nextSerial" type="number" inputmode="numeric">
@@ -114,13 +157,14 @@
           <select id="lockAfter"><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select>
           <div class="row"><button id="changePin">Change PIN</button><button id="eraseAll" class="danger">Erase everything</button></div>
         </div>
-        <p class="note dim center">Sills Licence Manager 1.0 &middot; revoking keys still happens on your PC (Licence manager &rarr; Keys), because only the master key can do it.</p>
+        <p class="note dim center">Sills Licence Manager 1.1</p>
       </div>
     </div>
 
     <nav class="bottom">
       <button data-tab="issue" class="on"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Issue</span></button>
       <button data-tab="keys"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/></svg><span>Keys</span></button>
+      <button data-tab="admins"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/></svg><span>God mode</span></button>
       <button data-tab="check"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg><span>Check</span></button>
       <button data-tab="settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span>Settings</span></button>
     </nav>
@@ -133,8 +177,20 @@
       <div id="sheetContent"></div>
       <div class="row wrap">
         <button id="shCopy">Copy key</button><button id="shShare">Share</button><button id="shReissue" class="primaryLite">Change &amp; re-issue</button>
+        <button id="shRevoke" class="danger">Revoke</button><button id="shRestore" hidden>Restore</button><button id="shComputers">Computers</button>
       </div>
+      <p id="shMasterHint" class="note dim small">Revoke, restore and computers need master mode (Settings).</p>
+      <div id="shPcs" class="small" hidden></div>
       <button id="shClose" class="ghost">Close</button>
+    </div>
+  </div>
+  <div id="ppSheet" class="sheet" hidden>
+    <div class="sheetBody">
+      <div class="grab"></div>
+      <p id="ppTitle"></p>
+      <input id="pp1" type="password" autocomplete="off" placeholder="Passphrase">
+      <div id="pp2Row"><input id="pp2" type="password" autocomplete="off" placeholder="Again"></div>
+      <div class="row"><button id="ppOk" class="primary">OK</button><button id="ppCancel" class="ghost">Cancel</button></div>
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
