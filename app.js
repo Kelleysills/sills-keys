@@ -1327,7 +1327,7 @@ function reqItem(r) {
       const fid = String(f.id || i), on = fid in picks ? picks[fid] : f.on !== false;
       return `<label class="feat"><input type="checkbox" data-rid="${id}" data-fid="${esc(fid)}" ${on ? "checked" : ""}><span>${esc(f.label || fid)}</span></label>`;
     }).join("") + `</div>`;
-    h += `<div class="row reqBtns"><button class="primaryLite small" data-ok="${id}">Approve</button><button class="danger small" data-no="${id}">Reject</button><button class="small" data-review="${id}">Add a note...</button></div>`;
+    h += `<div class="row reqBtns"><button class="primaryLite small" data-ok="${id}">Approve</button><button class="danger small" data-no="${id}">Reject</button><button class="small" data-review="${id}">Note</button></div>`;
   } else if (r.status === "queued" || r.status === "question") {
     h += `<div class="row reqBtns"><button class="danger small" data-cancel="${id}" data-st="${esc(r.status)}">Cancel request</button></div>`;
   }
@@ -1401,7 +1401,7 @@ function armed(b, text) {
         if (boxes.length && !include.length) { toast("Tick at least one part, or tap Reject."); return; }
         b.disabled = true; await decideRequest(id, "approved", boxes.length ? include : undefined); delete reqPick[id]; b.disabled = false; return;
       }
-      if (b.dataset.no) { if (!armed(b, "Tap again to reject")) return; b.disabled = true; await decideRequest(b.dataset.no, "rejected"); return; }
+      if (b.dataset.no) { if (!armed(b, "Sure?")) return; b.disabled = true; await decideRequest(b.dataset.no, "rejected"); return; }
       if (b.dataset.cancel) {
         if (!armed(b, "Tap again to cancel")) return;
         b.disabled = true;

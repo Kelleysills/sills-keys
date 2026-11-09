@@ -161,3 +161,8 @@ body.holiday .card { backdrop-filter: blur(2px); }
 .reqFeats label.feat { display: flex; gap: 10px; align-items: flex-start; padding: 6px 0; font-size: 13.5px; text-transform: none; letter-spacing: 0; color: var(--text, #ede6d6); margin: 0; }
 .reqFeats input { width: 20px; height: 20px; margin: 1px 0 0; padding: 0; flex: none; accent-color: #e0a243; }
 .reqFeats label.feat span { flex: 1; text-align: left; font-weight: 400; }
+/* Approve is the big one: 2 parts wide, Reject and Note 1 part each, whatever the text */
+.reqItem .reqBtns { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 8px; }
+.reqItem .reqBtns > * { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 4px; padding-right: 4px; }
+.reqItem .reqBtns button[data-ok] { font-weight: 700; padding-top: 9px; padding-bottom: 9px; }
+.reqItem .reqBtns button[data-cancel] { grid-column: 1 / -1; }
