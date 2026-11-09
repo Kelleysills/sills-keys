@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111216">
-<meta name="app-version" content="24">
+<meta name="app-version" content="25">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://raw.githubusercontent.com https://api.github.com https://*.workers.dev; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Sills Licence Manager</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -149,6 +149,9 @@
 
       <!-- settings -->
       <div class="tab" id="tab-settings" hidden>
+        <div class="card" id="alertsAsk" hidden><div class="cardHead"><span>Turn on notifications</span></div>
+          <p class="small dim">Get pinged when Claude has an update ready for your OK, and when customers need you.</p>
+          <div class="row"><button id="alertsAskBtn" class="primary">Turn on notifications</button></div></div>
         <div class="card" id="reqCard" hidden><div class="cardHead"><span>Request an update</span></div>
           <p class="small dim">Describe a change to the plug-ins, the Hub or this app. Claude picks it up within the hour, builds it on your PC, and your Hub installs it (approve the Windows prompt).</p>
           <textarea id="reqText" rows="4" placeholder="e.g. Make the Tune retune knob go down to 0 ms"></textarea>

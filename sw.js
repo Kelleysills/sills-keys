@@ -1,5 +1,5 @@
 // Sills Licence Manager service worker: the app works offline; the revocation list always comes from the network.
-const CACHE = "sills-keys-v24";
+const CACHE = "sills-keys-v25";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./core.js", "./themes.js", "./themes-default.json", "./update.js", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 self.addEventListener("install", (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener("activate", (e) => {
@@ -20,10 +20,20 @@ self.addEventListener("fetch", (e) => {
 // alerts from the activation service arrive as empty pushes: show a generic notice, details load inside the app
 // (a fresh owner notice from the build assistant - "update ready for your approval" - is shown instead when there is one)
 const ACT_URL = "https://sills-activation.kelleysills.workers.dev";
+async function myEp() {   // first 32 hex of sha256(this phone's push endpoint) - proves to the service it's the owner's subscribed phone
+  const s = await self.registration.pushManager.getSubscription();
+  if (!s) return "";
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s.endpoint)));
+  return Array.from(h, (b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+}
 self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
-    let n = null;
-    try { const j = await (await fetch(ACT_URL + "/notice", { cache: "no-store" })).json(); if (j.notice && Date.now() - j.notice.at < 180000) n = j.notice; } catch {}
+    let n = null, ep = "";
+    try { ep = await myEp(); const j = await (await fetch(ACT_URL + "/notice?ep=" + ep, { cache: "no-store" })).json(); if (j.notice && Date.now() - j.notice.at < 180000) n = j.notice; } catch {}
+    if (n && n.request && n.code)   // a plan waiting for approval: decide right from the notification
+      return self.registration.showNotification(n.title, { body: n.body, icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice", renotify: true,
+        requireInteraction: true, actions: [{ action: "approve", title: "Approve" }, { action: "reject", title: "Reject" }],
+        data: { tab: n.tab || "settings", request: n.request, code: n.code, ep } });
     if (n) return self.registration.showNotification(n.title, { body: n.body, icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice", renotify: true, data: { tab: n.tab || "settings" } });
     return self.registration.showNotification("Sills Licence Manager", {
       body: "New licence activity - a customer may be asking for another computer. Tap to review.",
@@ -32,6 +42,21 @@ self.addEventListener("push", (e) => {
 });
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
+  const d = e.notification.data || {};
+  if ((e.action === "approve" || e.action === "reject") && d.request) {
+    e.waitUntil((async () => {
+      let ok = false;
+      try {
+        const j = await (await fetch(ACT_URL + "/request-decision", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ep: d.ep, code: d.code, id: d.request, decision: e.action === "approve" ? "approved" : "rejected" }) })).json();
+        ok = !!j.ok;
+      } catch {}
+      await self.registration.showNotification(ok ? (e.action === "approve" ? "Approved" : "Rejected") : "Didn't go through", {
+        body: ok ? (e.action === "approve" ? "Claude builds it on its next run - you'll get a 'Ready to build' ping." : "Claude won't build it.") : "Open the app and decide there.",
+        icon: "icon-192.png", badge: "icon-192.png", tag: "sills-notice", data: { tab: "settings" } });
+    })());
+    return;
+  }
   e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((cs) => {
     const tab = (e.notification.data && e.notification.data.tab) || "keys";
     for (const c of cs) { c.postMessage(tab === "keys" ? "inbox" : "tab:" + tab); return c.focus(); }

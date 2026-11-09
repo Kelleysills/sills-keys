@@ -235,7 +235,10 @@ function enterMain() {
 /** Keep this phone signed up for alerts: re-registers the subscription with the service on every unlock (it can get lost). */
 async function ensureAlerts() {
   try {
-    if (!ls.get("sills.alerts", false) || !canMaster() || !("Notification" in self) || Notification.permission !== "granted") return;
+    if (ls.get("sills.alerts", null) === false || !canMaster() || !("Notification" in self)) return;   // on unless you turned alerts off
+    if (Notification.permission === "default") { $("alertsAsk").hidden = false; return; }   // needs one tap (browsers ask on a tap)
+    if (Notification.permission !== "granted") return;
+    ls.set("sills.alerts", true);
     const reg = await navigator.serviceWorker.ready;
     let s = await reg.pushManager.getSubscription();
     if (!s) {
@@ -1293,11 +1296,30 @@ async function loadRequests() {
   return { sha: j.sha, list: Array.isArray(list) ? list : [] };
 }
 const REQ_LABEL = { awaiting: ["Needs your OK", "bad"], approved: ["Approved - building next run", "warn"], rejected: ["Rejected", ""], queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
+async function applyDecisions() {   // Approve / Reject taps made on notifications (kept by the activation service)
+  if (!canMaster()) return;
+  const d = (await adminCall("decisions")).decisions || [];
+  if (!d.length) return;
+  for (let attempt = 0; attempt < 3; ++attempt) {
+    const { sha, list } = await loadRequests();
+    let changed = false;
+    for (const x of d) { const r = list.find((q) => q.id === x.id); if (r && r.status === "awaiting") { r.status = x.decision; r.decidedAt = x.at; changed = true; } }
+    if (changed) {
+      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update requests decided from notifications", content: textToB64(JSON.stringify(list, null, 1) + "\n"), sha, branch: "main" }) }, LEDGER_API_FOR());
+      if (!put.ok && (put.status === 409 || put.status === 422)) continue;
+    }
+    break;
+  }
+  const ids = d.map((x) => x.id);
+  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(ids))))).slice(0, 32);
+  await adminCall("decisionsdone", h, { ids });
+}
 async function renderRequests() {
   const card = $("reqCard");
   card.hidden = !state.data.ghToken;
   if (card.hidden) return;
   try {
+    try { await applyDecisions(); } catch {}
     const { list } = await loadRequests();
     $("reqList").innerHTML = list.slice(-8).reverse().map((r) => {
       const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
@@ -1326,6 +1348,7 @@ async function sendRequest() {
   renderRequests();
 }
 { const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
+{ const b = document.getElementById("alertsAskBtn"); if (b) b.onclick = async () => { $("alertsAsk").hidden = true; await alerts(true); }; }
 { const l = document.getElementById("reqList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.reqok) decideRequest(b.dataset.reqok, "approved"); if (b.dataset.reqno) decideRequest(b.dataset.reqno, "rejected"); }); }
 async function decideRequest(id, status) {
