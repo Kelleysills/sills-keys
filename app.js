@@ -89,8 +89,10 @@ let pinBuf = "";
 function showLock(msg) {
   state.aes = null; state.pass = null; state.passText = ""; state.master = null;
   pinBuf = ""; drawPin();
-  $("lockMsg").textContent = msg || "Enter your PIN";
+  $("lockMsg").textContent = msg || (bioInfo() ? "Touch the sensor, or enter your PIN" : "Enter your PIN");
   show("lock");
+  renderBio();
+  if (bioInfo() && document.visibilityState === "visible") setTimeout(bioUnlock, 250);
 }
 function drawPin() {
   $("pinDots").innerHTML = Array.from({ length: Math.max(6, pinBuf.length) }, (_, i) => `<span class="${i < pinBuf.length ? "on" : ""}"></span>`).join("");
@@ -101,12 +103,7 @@ async function tryUnlock() {
   const v = ls.get("sills.vault");
   try {
     const salt = unb64(v.salt);
-    const key = await deriveKey(pinBuf, salt);
-    const inner = await unseal(key, v);
-    state.aes = key; state.salt = salt; state.passText = inner.passText; state.data = inner.data || { rows: [], nextN: 1 };
-    state.pass = await L.parseAdminPass(state.passText);
-    ls.set("sills.fails", { n: 0, until: 0 });
-    enterMain();
+    await openVault(await deriveKey(pinBuf, salt), salt);
   } catch {
     const n = fails.n + 1;
     ls.set("sills.fails", { n, until: n >= 5 ? Date.now() + 30000 * Math.pow(2, n - 5) : 0 });
@@ -114,6 +111,82 @@ async function tryUnlock() {
     pinBuf = ""; drawPin();
     navigator.vibrate?.(120);
   }
+}
+
+async function openVault(key, salt) {
+  const inner = await unseal(key, ls.get("sills.vault"));   // throws on a wrong key
+  state.aes = key; state.salt = salt; state.passText = inner.passText; state.data = inner.data || { rows: [], nextN: 1 };
+  state.pass = await L.parseAdminPass(state.passText);
+  // master mode kept unlocked inside the vault (Settings > Master mode > Keep master unlocked)
+  if (state.data.masterKeep) { try { state.master = L.hexToBytes(state.data.masterKeep); } catch { state.master = null; } }
+  ls.set("sills.fails", { n: 0, until: 0 });
+  enterMain();
+}
+
+// ------------------------------------------------------------------ fingerprint / face unlock (passkey + PRF)
+// The passkey's PRF output is an AES key that wraps the vault key itself - the biometric really unlocks the data,
+// it isn't a screen in front of the PIN. The PIN keeps working as the fallback.
+const PRF_SALT = new TextEncoder().encode("sills-licence-manager vault v1".padEnd(32, "."));
+const bioInfo = () => ls.get("sills.bio", null);
+async function vaultKeyBits(pin, salt) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pin), "PBKDF2", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 310000, hash: "SHA-256" }, base, 256));
+}
+async function prfKey(bytes) { return crypto.subtle.importKey("raw", bytes, "AES-GCM", false, ["encrypt", "decrypt"]); }
+async function bioGet(idB64) {
+  const cred = await navigator.credentials.get({ publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)), rpId: location.hostname, userVerification: "required", timeout: 60000,
+    allowCredentials: [{ type: "public-key", id: unb64(idB64) }], extensions: { prf: { eval: { first: PRF_SALT } } } } });
+  const r = cred.getClientExtensionResults().prf?.results?.first;
+  if (!r) throw new Error("this phone's passkeys can't unlock data (no PRF)");
+  return new Uint8Array(r);
+}
+async function enableBio() {
+  if (!window.PublicKeyCredential) { toast("This browser has no fingerprint / passkey support."); return; }
+  const pin = await askPassphrase("Enter your PIN to turn on fingerprint / face unlock", false, true);
+  if (!pin) return;
+  const v = ls.get("sills.vault"), salt = unb64(v.salt);
+  let raw;
+  try { raw = await vaultKeyBits(pin, salt); await unseal(await prfKey(raw), v); } catch { toast("Wrong PIN."); return; }
+  try {
+    const cred = await navigator.credentials.create({ publicKey: {
+      rp: { name: "Sills Licence Manager", id: location.hostname },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Sills licence manager", displayName: "Sills Licence Manager" },
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+      authenticatorSelection: { userVerification: "required", residentKey: "preferred" }, timeout: 60000,
+      extensions: { prf: { eval: { first: PRF_SALT } } } } });
+    const ext = cred.getClientExtensionResults().prf;
+    if (ext && ext.enabled === false) throw new Error("this phone's passkeys can't unlock data (no PRF)");
+    const id = b64(new Uint8Array(cred.rawId));
+    const out = ext?.results?.first ? new Uint8Array(ext.results.first) : await bioGet(id);   // some phones only answer PRF on sign-in
+    const box = await seal(await prfKey(out), { k: L.bytesToHex(raw) });
+    ls.set("sills.bio", { id, ...box });
+    toast("Fingerprint / face unlock is on.");
+  } catch (e) { toast(e.name === "NotAllowedError" ? "Cancelled." : "Couldn't turn it on: " + e.message); }
+  renderBio();
+}
+function disableBio() { ls.del("sills.bio"); renderBio(); toast("Fingerprint / face unlock is off - use your PIN."); }
+let bioBusy = false;
+async function bioUnlock() {
+  const b = bioInfo(); if (!b || bioBusy) return;
+  bioBusy = true;
+  try {
+    const out = await bioGet(b.id);
+    const inner = await unseal(await prfKey(out), b);
+    const v = ls.get("sills.vault"), salt = unb64(v.salt);
+    const key = await crypto.subtle.importKey("raw", L.hexToBytes(inner.k), "AES-GCM", false, ["encrypt", "decrypt"]);
+    await openVault(key, salt);
+  } catch (e) {
+    if (e.name !== "NotAllowedError") $("lockMsg").textContent = "Fingerprint didn't work - use your PIN";
+  } finally { bioBusy = false; }
+}
+function renderBio() {
+  const on = !!bioInfo();
+  if ($("bioState")) $("bioState").textContent = on ? "On - unlock with your fingerprint or face; the PIN still works." : "Off - unlock with your PIN.";
+  if ($("bioOn")) $("bioOn").hidden = on;
+  if ($("bioOff")) $("bioOff").hidden = !on;
+  if ($("bioBtn")) $("bioBtn").hidden = !on;
 }
 
 // ------------------------------------------------------------------ main
@@ -125,7 +198,7 @@ function enterMain() {
   renderPassCard();
   renderKeys();
   refreshMasters().then(() => refreshRevocations(false));
-  renderMaster(); renderAdmins(); renderAlerts();
+  renderMaster(); renderAdmins(); renderAlerts(); renderBio();
   if (new URLSearchParams(location.search).get("tab") === "keys") tab("keys");
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
@@ -385,10 +458,11 @@ async function refreshMasters() {
   L.setExtraRoots(state.masters && state.masters.ok ? state.masters.masters.map((m) => m.hex) : []);
   renderMaster(); fillWhat(); renderKeys();
 }
-async function askPassphrase(title, twice) {
+async function askPassphrase(title, twice, numeric = false) {
   return new Promise((resolve) => {
     $("ppTitle").textContent = title;
     $("pp1").value = ""; $("pp2").value = ""; $("pp2Row").hidden = !twice;
+    $("pp1").inputMode = numeric ? "numeric" : "text";
     $("ppSheet").hidden = false; $("pp1").focus();
     $("ppOk").onclick = () => {
       const a = $("pp1").value;
@@ -409,6 +483,7 @@ async function makeMaster() {
   const box = await seal(key, { secret: L.bytesToHex(m.secret) });
   state.data.master = { pub: m.publicHex, salt: b64(salt), ...box, made: L.isoDay(new Date()) };
   state.master = m.secret;
+  if (state.data.keepMaster !== false) state.data.masterKeep = L.bytesToHex(m.secret);
   await save();
   renderMaster();
   await copyText(m.publicHex, "Master key copied - paste it in the Hub.");
@@ -422,6 +497,7 @@ async function unlockMaster() {
     const key = await deriveKey(pp, unb64(state.data.master.salt), 600000);
     const inner = await unseal(key, state.data.master);
     state.master = L.hexToBytes(inner.secret);
+    if (state.data.keepMaster !== false) { state.data.masterKeep = inner.secret; await save(); }
     renderMaster(); fillWhat(); renderKeys(); renderAdmins(); if (!$("tab-keys").hidden) loadInbox();
     toast(masterTrusted() ? "Master mode on." : "Unlocked - but your PC hasn't trusted this phone yet.");
     return true;
@@ -439,6 +515,7 @@ function renderMaster() {
   $("unlockMaster").hidden = !m || !!state.master;
   $("ghToken").value = state.data.ghToken ? "********" : "";
   $("masterBadge").hidden = !canMaster();
+  $("keepMaster").checked = state.data.keepMaster !== false;
 }
 const LEDGER_API = "https://api.github.com/repos/Kelleysills/sills-ledger/contents/";
 async function ghFetch(path, opts = {}, base = API) {
@@ -713,6 +790,16 @@ function wire() {
   navigator.serviceWorker?.addEventListener("message", (e) => { if (e.data === "inbox" && state.aes) tab("keys"); });
   $("shRestore").onclick = () => sheetRevoke(false);
   $("makeMaster").onclick = makeMaster;
+  $("keepMaster").onchange = async () => {
+    state.data.keepMaster = $("keepMaster").checked;
+    if (!state.data.keepMaster) delete state.data.masterKeep;
+    else if (state.master) state.data.masterKeep = L.bytesToHex(state.master);
+    await save();
+    toast(state.data.keepMaster ? "Master mode stays unlocked on this phone." : "Master mode will ask for the passphrase each time.");
+  };
+  $("bioOn").onclick = enableBio;
+  $("bioOff").onclick = disableBio;
+  $("bioBtn").onclick = bioUnlock;
   $("unlockMaster").onclick = unlockMaster;
   $("copyMasterPub").onclick = () => masterPub() && copyText(masterPub(), "Master key copied.");
   $("refreshMasters").onclick = () => refreshMasters().then(() => toast(masterTrusted() ? "Your PC trusts this phone." : "Not trusted yet."));
@@ -742,7 +829,7 @@ function wire() {
   $("changePin").onclick = () => { show("setup"); $("passInput").value = state.passText; checkPassInput(); };
   $("eraseAll").onclick = () => {
     if (!confirm("Erase the admin pass and every key stored on this phone? Keys you've already given out keep working.")) return;
-    ls.del("sills.vault"); ls.del("sills.fails");
+    ls.del("sills.vault"); ls.del("sills.fails"); ls.del("sills.bio");
     state.aes = null; state.pass = null; state.master = null; state.data = { rows: [], nextN: 1 };
     show("setup");
   };

@@ -109,3 +109,6 @@ button:disabled { opacity: 0.45; }
 button.small { font-size: 12px; padding: 4px 10px; min-height: 0; }
 details summary { margin-top: 8px; cursor: pointer; }
 #evList div { padding: 3px 0; }
+.bioBtn { margin-top: 18px; }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 13.5px; margin: 10px 0; }
+label.check input { width: auto; margin: 0; }
