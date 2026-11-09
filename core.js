@@ -331,6 +331,16 @@ export async function verifyTrustedMasters(text) {
 
 // ================================================================== licence policy (rules pulled from GitHub)
 /** policy.txt: "SILLS-POLICY 1\n<json>\nsig <hex>" signed by any trusted master. Returns { ok, policy, seq } */
+/** Any signed document ("<header>\n<json>\nsig <hex>") from a trusted master: { ok, doc, seq }. */
+export async function verifySignedDoc(text, header) {
+  const t = String(text || "").replace(/\r\n/g, "\n");
+  const sigPos = t.lastIndexOf("\nsig ");
+  if (!t.startsWith(header + "\n") || sigPos < 0) return { ok: false };
+  const body = t.slice(0, sigPos + 1);
+  const sig = hexToBytes(t.slice(sigPos + 5).trim());
+  if (sig.length !== 64 || !(await verifyAnyRoot(sig, enc.encode(body)))) return { ok: false };
+  try { const doc = JSON.parse(body.slice(body.indexOf("\n") + 1)); return { ok: true, doc, seq: doc.seq || 0 }; } catch { return { ok: false }; }
+}
 export async function verifyPolicy(text) {
   const t = text.replace(/\r\n/g, "\n");
   const sigPos = t.lastIndexOf("\nsig ");

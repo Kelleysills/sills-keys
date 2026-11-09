@@ -117,7 +117,7 @@ label.check input { width: auto; margin: 0; }
 #holiday { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden;
   background: radial-gradient(120% 70% at 50% 100%, #1f2636 0%, #15171d 55%, #111216 100%); }
 #holiday canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-#holiday svg.village { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+#holiday .village { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
   width: min(100%, 460px); height: auto; fill: initial; stroke: none; }
 /* the app's own background colour laid over the scene, a little see-through, so text stays easy to read */
 #holiday .veil { position: absolute; inset: 0; background: rgba(17, 18, 22, 0.55); }
@@ -137,5 +137,5 @@ body.holiday .card { backdrop-filter: blur(2px); }
 @media (prefers-reduced-motion: reduce) { #holiday .win, #holiday .puff { animation: none; } }
 .hatWrap { position: relative; display: inline-block; width: auto; height: auto; border-radius: 0; flex: none; line-height: 0; }
 .hatWrap > img.logo { display: block; }
-.hatWrap svg.hat { position: absolute; left: -14%; top: -30%; width: 66%; height: auto; fill: initial; stroke: none;
+.hatWrap img.hat { position: absolute; left: -14%; top: -30%; width: 66%; height: auto;
   transform: rotate(-18deg); transform-origin: 70% 85%; filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35)); pointer-events: none; }
