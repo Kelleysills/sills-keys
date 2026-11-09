@@ -1286,101 +1286,109 @@ function installDetail(serial) {
                                        : `<div class="dim">Plug-in list arrives with its next check-in (Hub 0.4.28+).</div>`) + `</div>`).join("") + `</div>`;
 }
 
-// ------------------------------------------------------------------ update requests (owner): requests.json in the private sills-ledger repo
-// A scheduled Claude task checks it every hour, builds the change on the PC and marks each request's status here.
+// ------------------------------------------------------------------ update requests (owner): kept by the activation service
+// (moved from requests.json in sills-ledger in phone 1.11 - the cloud build assistant can't reach that repo). A scheduled Claude
+// task checks them every hour, plans / builds on the PC and marks each request's status; this phone checks every 5 s while open.
 const REQ_FILE = "requests.json";
+const reqHash = async (v) => L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(v))))).slice(0, 32);
+const reqOwner = () => !!(actUrl() && state.data.master);
+async function importLedgerRequests() {   // once per phone: copy over what requests.json in sills-ledger still had
+  if (ls.get("sills.reqImported", false) || !state.data.ghToken) return;
+  try {
+    const res = await ghFetch(REQ_FILE + "?ref=main", { cache: "no-store" }, LEDGER_API_FOR());
+    let list = [];
+    if (res.ok) { try { list = JSON.parse(b64ToText((await res.json()).content)); } catch {} }
+    if (Array.isArray(list) && list.length) { const requests = list.slice(-300); await adminCall("reqimport", await reqHash({ requests }), { requests }); }
+    ls.set("sills.reqImported", true);
+  } catch {}   // try again next time
+}
 async function loadRequests() {
-  const res = await ghFetch(REQ_FILE + "?ref=main", { cache: "no-store" }, LEDGER_API_FOR());
-  if (res.status === 404) return { sha: undefined, list: [] };
-  const j = await res.json();
-  let list = [];
-  try { list = JSON.parse(b64ToText(j.content)); } catch {}
-  return { sha: j.sha, list: Array.isArray(list) ? list : [] };
+  await importLedgerRequests();
+  const list = (await adminCall("reqget")).requests;
+  return Array.isArray(list) ? list : [];
+}
+async function reqEdit(edits) {
+  const list = (await adminCall("reqedit", await reqHash(edits), { edits, from: "phone" })).requests;
+  return Array.isArray(list) ? list : [];
 }
 const REQ_LABEL = { awaiting: ["Needs your OK", "bad"], approved: ["Approved - building next run", "warn"], rejected: ["Rejected", ""], queued: ["Queued", "warn"], working: ["Claude is on it", "warn"], built: ["Built - installing on your PC", "good"], done: ["Done", "good"], question: ["Needs you", "bad"], failed: ["Didn't work", "bad"] };
-async function applyDecisions() {   // Approve / Reject taps made on notifications (kept by the activation service)
-  if (!canMaster()) return;
-  const d = (await adminCall("decisions")).decisions || [];
-  if (!d.length) return;
-  for (let attempt = 0; attempt < 3; ++attempt) {
-    const { sha, list } = await loadRequests();
-    let changed = false;
-    for (const x of d) { const r = list.find((q) => q.id === x.id); if (r && r.status === "awaiting") { r.status = x.decision; r.decidedAt = x.at; changed = true; } }
-    if (changed) {
-      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update requests decided from notifications", content: textToB64(JSON.stringify(list, null, 1) + "\n"), sha, branch: "main" }) }, LEDGER_API_FOR());
-      if (!put.ok && (put.status === 409 || put.status === 422)) continue;
-    }
-    break;
-  }
-  const ids = d.map((x) => x.id);
-  const h = L.bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(ids))))).slice(0, 32);
-  await adminCall("decisionsdone", h, { ids });
+let reqBusy = false, reqShownJson = "";
+const reqSeen = new Set();   // plans the pop-up already opened for (Later doesn't bring it back every 5 s)
+function drawRequests(list) {
+  const js = JSON.stringify(list.slice(-8));
+  if (js === reqShownJson) return;
+  reqShownJson = js;
+  $("updList").innerHTML = list.slice(-8).reverse().map((r) => {
+    const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
+    return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${when(r.at)}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
+      + `<div>${esc(r.text)}</div>` + (r.plan && r.status === "awaiting" ? `<div class="dim">Plan: ${esc(r.plan)}</div>` : "")
+      + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "")
+      + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-review="${esc(r.id)}">Review and approve</button></div>` : "")
+      + `</div>`;
+  }).join("") || `<p class="dim">No requests yet.</p>`;
 }
-async function renderRequests() {
+/** quiet = the 5-second check: no unlock prompt, no error text, and a newly waiting plan opens the approval pop-up. */
+async function renderRequests(quiet) {
   const card = $("reqCard");
-  card.hidden = !state.data.ghToken;
-  if (card.hidden) return;
+  card.hidden = !reqOwner();
+  if (card.hidden || reqBusy) return;
+  if (!canMaster()) { if (!quiet) { reqShownJson = ""; $("updList").innerHTML = `<p class="small dim">Unlock master mode to see your update requests.</p>`; } return; }
+  reqBusy = true;
   try {
-    try { await applyDecisions(); } catch {}
-    const { list } = await loadRequests();
-    $("reqList").innerHTML = list.slice(-8).reverse().map((r) => {
-      const [label, cls] = REQ_LABEL[r.status] || [r.status, ""];
-      return `<div class="instPc"><div><span class="badge ${cls}">${esc(label)}</span> <span class="dim">${new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.version ? " - v" + esc(r.version) : ""}</span></div>`
-        + `<div>${esc(r.text)}</div>` + (r.plan && r.status === "awaiting" ? `<div class="dim">Plan: ${esc(r.plan)}</div>` : "")
-        + (r.reply ? `<div class="dim">Claude: ${esc(r.reply)}</div>` : "")
-        + (r.status === "awaiting" ? `<div class="row"><button class="primary" data-review="${esc(r.id)}">Review and approve</button></div>` : "")
-        + `</div>`;
-    }).join("") || `<p class="dim">No requests yet.</p>`;
-  } catch (e) { $("reqList").textContent = "Couldn't load requests: " + e.message; }
+    const list = await loadRequests();
+    drawRequests(list);
+    const waiting = list.find((r) => r.status === "awaiting" && !reqSeen.has(r.id));
+    if (quiet && waiting && $("reqSheet").hidden) openReview(waiting);
+  } catch (e) {
+    if (!quiet) { reqShownJson = ""; $("updList").textContent = /unknown serial/.test(e.message)
+      ? "The activation service needs updating: run 4-setup-activation.bat on your PC once." : "Couldn't load requests: " + e.message; }
+  }
+  reqBusy = false;
 }
+setInterval(() => { if (document.visibilityState === "visible" && canMaster() && reqOwner()) renderRequests(true); }, 5000);
 async function sendRequest() {
   const text = $("reqText").value.trim();
   if (!text) { toast("Type what you'd like changed."); return; }
   $("reqSend").disabled = true;
   try {
-    for (let attempt = 0; attempt < 3; ++attempt) {
-      const { sha, list } = await loadRequests();
-      list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text, from: "phone", at: Date.now(), status: "queued" });
-      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update request (phone)", content: textToB64(JSON.stringify(list, null, 1) + "\n"), ...(sha ? { sha, branch: "main" } : {}) }) }, LEDGER_API_FOR());
-      if (put.ok) { $("reqText").value = ""; toast("Sent - Claude picks it up within the hour."); break; }
-      if (put.status !== 409 && put.status !== 422) throw new Error("GitHub " + put.status);
-    }
+    const list = await reqEdit([{ add: text }]);
+    drawRequests(list);
+    $("reqText").value = ""; toast("Sent - Claude picks it up within the hour.");
   } catch (e) { toast("Didn't send: " + e.message); }
   $("reqSend").disabled = false;
-  renderRequests();
 }
 { const b = document.getElementById("reqSend"); if (b) b.onclick = sendRequest; }
 { const b = document.getElementById("alertsAskBtn"); if (b) b.onclick = async () => { $("alertsAsk").hidden = true; await alerts(true); }; }
-{ const l = document.getElementById("reqList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
+{ const l = document.getElementById("updList"); if (l) l.addEventListener("click", (e) => { const b = e.target.closest("button"); if (!b) return;
     if (b.dataset.review) reviewRequest(b.dataset.review); }); }
 async function decideRequest(id, status, include, note) {
   try {
-    for (let attempt = 0; attempt < 3; ++attempt) {
-      const { sha, list } = await loadRequests();
-      const r = list.find((x) => x.id === id);
-      if (!r) throw new Error("request not found");
-      r.status = status; r.decidedAt = Date.now();
-      if (Array.isArray(include)) r.include = include;
-      if (note) r.note = note;
-      const put = await ghFetch(REQ_FILE, { method: "PUT", body: JSON.stringify({ message: "Update request " + status + " (phone)", content: textToB64(JSON.stringify(list, null, 1) + "\n"), sha, branch: "main" }) }, LEDGER_API_FOR());
-      if (put.ok) { toast(status === "approved" ? "Approved - Claude builds it on its next run (within the hour)." : "Rejected."); break; }
-      if (put.status !== 409 && put.status !== 422) throw new Error("GitHub " + put.status);
-    }
+    const set = { status };
+    if (Array.isArray(include)) set.include = include;
+    if (note) set.note = note;
+    const list = await reqEdit([{ id, set, ifStatus: "awaiting" }]);
+    drawRequests(list);
+    const r = list.find((x) => x.id === id);
+    if (!r) throw new Error("request not found");
+    if (r.status !== status) toast("That request was already decided (" + ((REQ_LABEL[r.status] || [r.status])[0]) + ").");
+    else toast(status === "approved" ? "Approved - Claude builds it on its next run (within the hour)." : "Rejected.");
   } catch (e) { toast("Didn't go through: " + e.message); }
-  renderRequests();
 }
 
 // ------------------------------------------------------------------ approval pop-up (opens by itself when a plan is waiting)
-let reviewing = null, reviewShownFor = "";
+let reviewing = null;
 async function reviewRequest(id) {
-  if (!state.data.ghToken) return;
+  if (!reqOwner() || !canMaster()) return;
   let list;
-  try { list = (await loadRequests()).list; } catch { return; }
+  try { list = await loadRequests(); } catch { return; }
   const r = id ? list.find((x) => x.id === id) : list.find((x) => x.status === "awaiting");
   if (!r || r.status !== "awaiting") { if (id) toast("That request has already been decided."); return; }
-  reviewing = r; reviewShownFor = r.id;
+  openReview(r);
+}
+function openReview(r) {
+  reviewing = r; reqSeen.add(r.id);
   $("rsAsk").textContent = "You asked: " + r.text;
-  $("rsWhen").textContent = new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  $("rsWhen").textContent = when(r.at);
   $("rsPlan").textContent = r.plan || "(no plan text)";
   const feats = Array.isArray(r.features) ? r.features : [];
   $("rsFeatWrap").hidden = !feats.length;
