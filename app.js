@@ -768,7 +768,7 @@ async function loadInbox(loud) {
       + (x.pending.note ? `<div class="dim">"${esc(x.pending.note)}"</div>` : "") + `<div class="dim">${when(x.pending.at)} - now on ${esc(x.machines.map((m) => m.name).join(", ") || "none")}</div></div>`
       + `<div class="row"><button class="primaryLite" data-approve="${x.serial}">Approve</button><button data-deny="${x.serial}">Deny</button></div></div>`).join("")
       : (passHtml ? "" : `<p class="small dim">No requests waiting.</p>`));
-    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for", passreq: "asked for", revokereq: "asked to revoke", restorereq: "asked to restore" };
+    const label = { activated: "activated on", blocked: "was blocked on", request: "asked for", passreq: "asked for", revokereq: "asked to revoke", restorereq: "asked to restore", updatereq: "asked for an update:" };
     $("evList").innerHTML = e.events.slice(0, 40).map((x) => `<div>${when(x.at)} - ${x.serial ? "#" + x.serial + " " : ""}${esc(x.licensee)} ${label[x.type] || x.type} ${esc(x.name || "")}</div>`).join("") || "Nothing yet.";
     const n = r.requests.length + pr.requests.length;
     navigator.setAppBadge?.(n).catch?.(() => {});
