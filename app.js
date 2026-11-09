@@ -230,6 +230,22 @@ function enterMain() {
   { const t = new URLSearchParams(location.search).get("tab"); if (t === "keys" || t === "settings") tab(t); }
   $("lockAfter").value = String(ls.get("sills.lockAfter", 300));
   if (state.pass && state.pass.ended) toast(state.pass.error + " Make a new pass on your PC.");
+  setTimeout(ensureAlerts, 1500);
+}
+/** Keep this phone signed up for alerts: re-registers the subscription with the service on every unlock (it can get lost). */
+async function ensureAlerts() {
+  try {
+    if (!ls.get("sills.alerts", false) || !canMaster() || !("Notification" in self) || Notification.permission !== "granted") return;
+    const reg = await navigator.serviceWorker.ready;
+    let s = await reg.pushManager.getSubscription();
+    if (!s) {
+      const info = await (await fetch(actUrl())).json();
+      if (!info.vapid) return;
+      s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(info.vapid) });
+    }
+    const sub = s.toJSON();
+    await adminCall("subscribe", await subHash(sub), { sub });
+  } catch { /* offline: next unlock */ }
 }
 
 function tab(name) {
