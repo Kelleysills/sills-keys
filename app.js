@@ -353,8 +353,10 @@ function clearReplace() {
 }
 
 // ------------------------------------------------------------------ keys
+function isDeleted(row) { return /\bdeleted\b/i.test(row.note || ""); }
 function statusOf(row, info) {
   const rv = state.rev && state.rev.serials ? state.rev.serials : [];
+  if (isDeleted(row)) return ["DELETED", "bad"];
   if (rv.includes(row.serial)) return ["REVOKED", "bad"];
   if (row.revoked) return ["REVOKED", "bad"];
   if (row.issuer && rv.includes(L.adminRevocationId(row.issuer))) return ["ISSUER OFF", "bad"];
@@ -365,14 +367,23 @@ function statusOf(row, info) {
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]); }
 function renderKeys() {
   const q = $("search").value.trim().toLowerCase();
-  const rows = state.data.rows.filter((r) => !q || r.licensee.toLowerCase().includes(q) || String(r.serial).startsWith(q) || (r.products || "").toLowerCase().includes(q));
+  // deleted keys stay out of the list unless asked for: the toggle under the list, searching "deleted", or typing the exact serial
+  const askDeleted = state.showDeleted || q === "deleted";
+  const matches = (r) => !q || q === "deleted" || r.licensee.toLowerCase().includes(q) || String(r.serial).startsWith(q) || (r.products || "").toLowerCase().includes(q);
+  const shown = (r) => !isDeleted(r) || askDeleted || String(r.serial) === q;
+  const rows = state.data.rows.filter((r) => matches(r) && shown(r) && (q !== "deleted" || isDeleted(r)));
+  const hiddenDel = state.data.rows.filter((r) => isDeleted(r) && matches(r) && !shown(r)).length;
+  const totalDel = state.data.rows.filter(isDeleted).length;
+  const tg = $("delToggle");
+  tg.hidden = totalDel === 0 || q === "deleted";
+  tg.textContent = state.showDeleted ? "Hide deleted keys" : `Show deleted keys (${hiddenDel || totalDel})`;
   $("keyList").innerHTML = rows.length ? rows.map((r) => {
     const [st, cls] = statusOf(r);
     return `<div class="item" data-serial="${r.serial}"><div class="ser">#${r.serial}</div><div class="who"><div class="name">${esc(r.licensee)}</div>`
       + `<div class="what">${esc(r.products)} - ${esc(r.type)}${r.expires !== "never" ? " - ends " + esc(r.expires) : ""}${r.source === "pc" ? " - PC" : ""}</div>`
       + installLine(r.serial) + `</div>`
       + `<span class="badge ${cls}">${st}</span></div>`;
-  }).join("") : `<div class="empty">No keys yet.<br>${state.data.ghToken ? "Your PC's keys arrive once its Hub (0.4.24 or later) has synced - then tap Sync with PC." : "Add your GitHub token in Settings, then tap Sync with PC to bring in your PC's keys."}</div>`;
+  }).join("") : state.data.rows.length ? `<div class="empty">No matching keys.</div>` : `<div class="empty">No keys yet.<br>${state.data.ghToken ? "Your PC's keys arrive once its Hub (0.4.24 or later) has synced - then tap Sync with PC." : "Add your GitHub token in Settings, then tap Sync with PC to bring in your PC's keys."}</div>`;
   renderRevInfo();
 }
 function renderRevInfo() {
@@ -1008,6 +1019,7 @@ function wire() {
   $("resShare").onclick = () => state.lastKey && shareKey(state.lastKey.key, state.lastKey.info);
   $("search").addEventListener("input", renderKeys);
   $("keyList").addEventListener("click", (e) => { const it = e.target.closest(".item"); if (it) openSheet(Number(it.dataset.serial)); });
+  $("delToggle").addEventListener("click", () => { state.showDeleted = !state.showDeleted; renderKeys(); });
   $("shClose").onclick = () => ($("sheet").hidden = true);
   $("sheet").addEventListener("click", (e) => { if (e.target.id === "sheet") $("sheet").hidden = true; });
   $("shCopy").onclick = () => sheetRow && copyText(sheetRow.key);
