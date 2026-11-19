@@ -2,114 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#121212">
-<meta name="app-version" content="1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://*.workers.dev http://127.0.0.1:8799; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'">
-<title>Sills BluePrint</title>
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icon-192.png">
-<link rel="apple-touch-icon" href="icon-192.png">
-<link rel="stylesheet" href="app.css">
-<script type="module" src="app.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0; url=https://sills-blueprint.kelleysills.workers.dev/app/">
+<title>Sills BluePrint has moved</title>
 </head>
-<body>
-<!-- first run: name / link / create / join -->
-<section id="welcome" class="welcome" hidden>
-  <div class="card">
-    <div class="brand">SILLS AUDIO</div>
-    <h1>BluePrint</h1>
-    <p id="wText" class="dim">Write songs with your team: lyrics, structure, who's on which verse, samples and the project files.</p>
-    <div id="wName">
-      <div class="row"><input id="wNameIn" placeholder="Your artist / producer name" autocomplete="nickname"><button id="wGo" class="primary">Continue</button></div>
-      <button id="wLink" class="ghost">I already use BluePrint on another computer or phone</button>
-    </div>
-    <div id="wOrg" hidden>
-      <div class="row"><button id="wCreate" class="primary">Create a label / studio</button><button id="wJoin">Join with an invite code</button></div>
-    </div>
-    <p id="wErr" class="err"></p>
-  </div>
-</section>
-
-<div id="shell" hidden>
-  <header id="top">
-    <div class="field org"><label>ORGANIZATION</label><select id="orgSel"></select></div>
-    <div class="field title"><label>SONG</label><input id="fTitle" placeholder="No song open" disabled></div>
-    <div class="field small"><label>BPM</label><input id="fBpm" inputmode="numeric" maxlength="3" disabled></div>
-    <div class="field key"><label>KEY</label><select id="fKey" disabled></select></div>
-    <div class="field small"><label>METER</label><select id="fMeter" disabled></select></div>
-    <div class="field status"><label>STATUS</label><select id="fStatus" disabled></select></div>
-    <div class="state"><span id="saveDot" class="dot"></span><span id="saveText">Ready</span></div>
-    <div class="topBtns">
-      <button id="bFollow" title="Follow-along lyrics (teleprompter)">Follow</button>
-      <button id="bMenu" title="Account and organization">&#9776;</button>
-    </div>
-  </header>
-
-  <main id="panes">
-    <section id="bins" class="pane">
-      <div class="tabs"><span class="fast">&#9776;</span><button class="tab on" data-btab="bins">Bins</button><button class="tab" data-btab="info">Info</button></div>
-      <div class="paneTitle"><b id="orgName">-</b><span id="myRole" class="dim"></span></div>
-      <div id="binsBody">
-        <div class="tools"><button id="bNewProject">New Project</button><button id="bNewSong">New Song</button><button id="bNewFolder">New Folder</button></div>
-        <div class="listHead"><span>Name</span><span>Info</span></div>
-        <div id="tree" class="tree"></div>
-      </div>
-      <div id="infoBody" class="info" hidden></div>
-    </section>
-
-    <section id="center" class="pane">
-      <div id="structure">
-        <div class="tabs"><span class="fast">&#9776;</span><button class="tab on">Structure</button><span id="structInfo" class="dim tabInfo"></span><button id="bAddSection" class="mini">+ Section</button></div>
-        <div id="ruler"></div>
-        <div id="lane"></div>
-      </div>
-      <div id="script">
-        <div class="tabs"><span class="fast">&#9776;</span><button class="tab on" id="songTab">No song open</button><button id="bTiming" class="mini toggle">Timing</button></div>
-        <div id="sheet"></div>
-        <div class="foot"><span id="footInfo"></span><span>Script view</span></div>
-      </div>
-    </section>
-
-    <section id="insp" class="pane">
-      <div class="tabs"><span class="fast">&#9776;</span>
-        <button class="tab on" data-itab="comments">Comments</button><button class="tab" data-itab="notes">Notes</button>
-        <button class="tab" data-itab="samples">Samples</button><button class="tab" data-itab="team">Team</button>
-      </div>
-      <div id="ip-comments" class="ipage">
-        <div id="comments" class="comments"></div>
-        <div class="composer"><textarea id="cText" rows="2" placeholder="Comment on the selected section..."></textarea><button id="cPost" class="primary">Post</button></div>
-      </div>
-      <div id="ip-notes" class="ipage" hidden>
-        <label>THEMES (comma separated)</label><input id="nThemes" placeholder="identity, hometown, comeback...">
-        <label>NOTES</label><textarea id="nNotes" placeholder="Concept, references, who's on the hook, mix notes..."></textarea>
-      </div>
-      <div id="ip-samples" class="ipage" hidden><div id="samples"></div><button id="bAddSample">+ Sample</button></div>
-      <div id="ip-team" class="ipage" hidden><div id="team"></div><button id="bInvite" class="primary">Invite people...</button><p id="storage" class="dim small"></p></div>
-    </section>
-  </main>
-
-  <nav id="mnav">
-    <button data-mview="bins">Bins</button><button data-mview="center" class="on">Song</button><button data-mview="insp">Inspector</button><button data-mview="follow">Follow</button>
-  </nav>
-</div>
-
-<!-- follow-along (teleprompter) -->
-<section id="follow" hidden>
-  <div class="fTop"><span id="flTitle"></span><button id="flClose">Close</button></div>
-  <div id="flView"></div>
-  <div class="fBar">
-    <div class="clock"><span id="flClock">0:00.0</span><small>SONG TIME</small></div>
-    <button id="flPlay" class="primary">Play</button><button id="flBack">-5 s</button><button id="flZero">0:00</button>
-    <button id="flArm" class="toggle rec">Timing</button><button id="flStamp">Stamp (T)</button>
-    <span id="flNext" class="next"></span>
-  </div>
-</section>
-
-<div id="menu" class="menu" hidden></div>
-<div id="modal" class="modal" hidden><div class="dlg"><h3 id="mTitle"></h3><p id="mText" class="dim"></p><div id="mFields"></div><div class="row end"><button id="mCancel">Cancel</button><button id="mOk" class="primary">OK</button></div></div></div>
-<input id="filePick" type="file" multiple hidden>
-<input id="dirPick" type="file" webkitdirectory multiple hidden>
-<div id="toast" class="toast" hidden></div>
+<body style="background:#121212;color:#d2d2d2;font-family:system-ui,sans-serif;padding:24px">
+<p>Sills BluePrint has its own address now:
+<a style="color:#4a8fdc" href="https://sills-blueprint.kelleysills.workers.dev/app/">sills-blueprint.kelleysills.workers.dev/app</a></p>
 </body>
 </html>

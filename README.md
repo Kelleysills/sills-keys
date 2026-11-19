@@ -13,10 +13,7 @@ An installable web app (PWA) for issuing and managing Sills Audio licence keys f
   No secrets in these files.
 - Revoking keys still needs the master key: do it on the PC.
 
-## Sills BluePrint (web) - `blueprint/`
-A separate web app hosted from the same site: **https://kelleysills.github.io/sills-keys/blueprint/**. Song building for labels and
-studios (projects, songs, structure, lyrics per artist, comments, notes, samples, team + invites, project file upload / download,
-follow-along teleprompter with live timing). Talks to the BluePrint service (Cloudflare Worker, deployed from the suite repo with
-6-setup-blueprint.bat). Own service worker + manifest, scoped to blueprint/. Source of truth: this folder; a copy lives in the suite
-repo at Tools/blueprint-web. Its device key is a non-extractable WebCrypto Ed25519 key in IndexedDB. `?service=<url>` overrides the
-service address (saved in localStorage) for testing. Bump the sw.js CACHE name and the app-version meta on every change.
+## Sills BluePrint (web) - moved
+BluePrint's web app now lives on its own site, served by the BluePrint service: https://sills-blueprint.kelleysills.workers.dev/app/
+(source: sills-audio-suite Tools/blueprint-server/public/app). `blueprint/` here only forwards there, and its sw.js removes the
+old installed copy from browsers that had it.
