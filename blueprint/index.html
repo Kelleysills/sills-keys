@@ -3,11 +3,33 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="0; url=https://sills-blueprint.kelleysills.workers.dev/app/">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://*.workers.dev; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-action 'none'">
 <title>Sills BluePrint has moved</title>
+<script type="module" src="link.js"></script>
+<style>
+  body { background:#121212; color:#d2d2d2; font: 15px/1.5 "Segoe UI", system-ui, sans-serif; margin:0; display:grid; place-items:center; min-height:100vh; padding:16px; box-sizing:border-box; }
+  .card { width:min(460px,100%); background:#2f2f2f; border:1px solid #0a0a0a; border-radius:4px; padding:22px 26px; }
+  .brand { color:#4a8fdc; font-size:11px; font-weight:700; letter-spacing:.2em; } h1 { margin:2px 0 8px; font-size:22px; }
+  .dim { color:#8e8e8e; } a, button { font: inherit; }
+  button, .btn { display:block; width:100%; box-sizing:border-box; text-align:center; text-decoration:none; color:#fff; background:linear-gradient(#3a6ea8,#2c5687); border:1px solid #0a0a0a; border-radius:3px; padding:10px; margin-top:12px; cursor:pointer; }
+  .btn.alt { background:linear-gradient(#404040,#363636); color:#d2d2d2; }
+  .code { font: 22px Consolas, ui-monospace, monospace; background:#1d1d1d; border:1px solid #0a0a0a; padding:12px; text-align:center; margin:12px 0 4px; user-select:all; }
+  .err { color:#e2463f; }
+</style>
 </head>
-<body style="background:#121212;color:#d2d2d2;font-family:system-ui,sans-serif;padding:24px">
-<p>Sills BluePrint has its own address now:
-<a style="color:#4a8fdc" href="https://sills-blueprint.kelleysills.workers.dev/app/">sills-blueprint.kelleysills.workers.dev/app</a></p>
+<body>
+<div class="card">
+  <div class="brand">SILLS AUDIO</div>
+  <h1>BluePrint has moved</h1>
+  <p id="msg" class="dim">Checking this browser for your BluePrint account...</p>
+  <div id="acct" hidden>
+    <p>Signed in here as <b id="who"></b><span id="orgs" class="dim"></span>.</p>
+    <p class="dim">To keep your account and organizations on the new address, get a link code, open the new BluePrint and choose
+      <b>"I already use BluePrint on another computer or phone"</b>.</p>
+    <button id="get">Get my link code</button>
+    <div id="out" hidden><div id="code" class="code"></div><p class="dim">Copied. Valid for 10 minutes.</p></div>
+  </div>
+  <a class="btn alt" id="go" href="https://sills-blueprint.kelleysills.workers.dev/app/">Open the new BluePrint</a>
+</div>
 </body>
 </html>
