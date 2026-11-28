@@ -1274,7 +1274,7 @@ async function masterQueue(serials, revoke) {
 // ------------------------------------------------------------------ install status (from the activation service)
 const PRODUCT_NAMES = { "hub": "Hub", "mixcoach": "Mix Coach", "mixcoach-ara": "Mix Coach ARA", "console": "Console Strip", "buscomp": "Bus Comp",
   "eq": "Sills EQ", "comp": "Sills Comp", "vintageeq": "Vintage EQ", "chamber": "Chamber", "tune": "Tune", "headless-horseman": "Headless Horseman",
-  "finisher": "Finisher", "chop-shop": "Chop Shop", "suite": "Ultimate Suite", "production-suite": "Production Suite", "mixing-suite": "Mixing Suite", "mastering-suite": "Mastering Suite" };
+  "finisher": "Finisher", "chop-shop": "Chop Shop", "nebula": "Nebula", "suite": "Ultimate Suite", "production-suite": "Production Suite", "mixing-suite": "Mixing Suite", "mastering-suite": "Mastering Suite" };
 function ago(t) {
   const m = Math.max(0, (Date.now() - t) / 60000);
   return m < 90 ? Math.round(m) + " min ago" : m < 2880 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " days ago";

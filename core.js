@@ -24,6 +24,7 @@ export const PRODUCTS = [
   { bit: 1 << 12, id: "headless-horseman", name: "Headless Horseman", suites: 0 },
   { bit: 1 << 13, id: "finisher", name: "Sills Finisher", suites: 0 },
   { bit: 1 << 14, id: "chop-shop", name: "Sills Chop Shop", suites: 1 },
+  { bit: 1 << 15, id: "nebula", name: "Sills Nebula", suites: 0 },
 ];
 export const ALL_PRODUCTS = 0xffff;
 export const Bundle = { Production: 1, Mixing: 2, Mastering: 4, Misc: 8, RackAccess: 16, Future: 128 };
